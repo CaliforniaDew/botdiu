@@ -20,7 +20,7 @@ DAD_ID = 8284345086
 MOM_ID = 5484371031
 
 TEXT_MODEL = "llama-3.3-70b-versatile"
-VISION_MODEL = "llama-3.2-11b-vision-preview"
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # Mood system
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
