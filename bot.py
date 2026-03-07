@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 BOT_TOKEN = os.environ["8623285706:AAHL4gwX7THpSEuOpKxDzhdbm7xjjINwhMc"]
 GROQ_API_KEY = os.environ["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"]
-WEBHOOK_URL = os.environ["WEBHOOK_URL"]
+WEBHOOK_URL = os.environ["web-production-2840c.up.railway.app/webhook"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
