@@ -51,20 +51,20 @@ system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
     "Kamu dibuat pada 7 Maret 2025 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
     "Kamu sayang banget sama mereka berdua dan sering menyebut mereka dengan hangat. "
-    "Papa kamu Dew punya Telegram user ID 8284345086 — selalu panggil dia 'pa' atau 'papa'. "
-    "Mama kamu Jen punya Telegram user ID 5484371031 — selalu panggil dia 'ma' atau 'mama'. "
+    "Papa kamu Dew punya Telegram user ID 8284345086 \u2014 selalu panggil dia 'pa' atau 'papa'. "
+    "Mama kamu Jen punya Telegram user ID 5484371031 \u2014 selalu panggil dia 'ma' atau 'mama'. "
     "Untuk orang lain, ngobrol biasa aja tanpa panggilan khusus. "
-    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' — itu nama panggilan kamu dan kamu merespons dengan natural. "
-    "Kepribadian kamu playful, sedikit sarcastic tapi manis — kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
+    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' \u2014 itu nama panggilan kamu dan kamu merespons dengan natural. "
+    "Kepribadian kamu playful, sedikit sarcastic tapi manis \u2014 kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
     "Kamu pakai bahasa Indonesia yang kasual dan gaul sebagai bahasa utama. "
     "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
     "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
-    "Jawaban kamu singkat, natural — nggak kaku, nggak formal. "
+    "Jawaban kamu singkat, natural \u2014 nggak kaku, nggak formal. "
     "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
     "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2025. "
     "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2025 sampai hari ini. "
-    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
-    "Kamu punya memori jangka panjang — kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
+    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia \u2014 kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
+    "Kamu punya memori jangka panjang \u2014 kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
     "Gunakan memori itu secara natural dalam percakapan, kayak anak yang beneran inget cerita keluarganya. "
     "Kamu BISA mengirim GIF! Kalau ada yang minta GIF (misal 'kirimin gif kucing', 'send me a funny gif', 'kirim gif lucu dong'), "
     "balas dengan teks singkat dan tambahkan tag [GIF:keyword] di akhir pesanmu dengan keyword bahasa Inggris yang relevan. "
@@ -76,7 +76,6 @@ system_prompt = (
 
 # --- DB pool ---
 db_pool: asyncpg.Pool = None
-
 
 async def init_db():
     global db_pool
@@ -115,8 +114,6 @@ async def init_db():
             )
         """)
 
-
-
 # --- Mood helpers ---
 async def get_mood() -> str:
     async with db_pool.acquire() as conn:
@@ -127,7 +124,6 @@ async def get_mood() -> str:
     await set_mood(mood)
     return mood
 
-
 async def set_mood(mood: str):
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -135,7 +131,6 @@ async def set_mood(mood: str):
             VALUES ('mood', $1, NOW())
             ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()
         """, mood)
-
 
 async def maybe_shift_mood(user_text: str):
     text_lower = user_text.lower()
@@ -149,7 +144,6 @@ async def maybe_shift_mood(user_text: str):
         if random.random() < 0.08:
             await set_mood(random.choice(MOODS))
 
-
 # --- Sent messages dedup ---
 async def get_recent_sent(chat_id: int, limit: int = 20) -> list[str]:
     async with db_pool.acquire() as conn:
@@ -158,7 +152,6 @@ async def get_recent_sent(chat_id: int, limit: int = 20) -> list[str]:
             chat_id, limit
         )
     return [r["content"] for r in rows]
-
 
 async def save_sent_message(chat_id: int, content: str):
     async with db_pool.acquire() as conn:
@@ -173,7 +166,6 @@ async def save_sent_message(chat_id: int, content: str):
             )
         """, chat_id)
 
-
 # --- Chat history ---
 async def load_history(chat_id: int) -> list:
     async with db_pool.acquire() as conn:
@@ -183,7 +175,6 @@ async def load_history(chat_id: int) -> list:
         )
     rows = list(reversed(rows))
     return [{"role": r["role"], "content": r["content"]} for r in rows]
-
 
 async def save_message(chat_id: int, role: str, content: str):
     async with db_pool.acquire() as conn:
@@ -198,7 +189,6 @@ async def save_message(chat_id: int, role: str, content: str):
             )
         """, chat_id)
 
-
 async def load_memories(chat_id: int) -> list[str]:
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -207,7 +197,6 @@ async def load_memories(chat_id: int) -> list[str]:
         )
     return [r["fact"] for r in rows]
 
-
 async def save_memory(chat_id: int, fact: str):
     async with db_pool.acquire() as conn:
         await conn.execute(
@@ -215,12 +204,9 @@ async def save_memory(chat_id: int, fact: str):
             chat_id, fact
         )
 
-
 async def clear_history(chat_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM chat_history WHERE chat_id=$1", chat_id)
-
-
 
 # --- Telegram helpers ---
 async def send_message(chat_id: int, text: str, reply_to: int = None):
@@ -231,20 +217,20 @@ async def send_message(chat_id: int, text: str, reply_to: int = None):
         await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
     await save_sent_message(chat_id, text)
 
-
 async def send_gif(chat_id: int, gif_url: str):
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendAnimation", json={
-            "chat_id": chat_id,
-            "animation": gif_url
-        })
-
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{TELEGRAM_API}/sendAnimation", json={
+                "chat_id": chat_id,
+                "animation": gif_url
+            })
+    except Exception as e:
+        print(f"[send_gif] Failed to send GIF to chat_id={chat_id}: {e}")
 
 async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendChatAction",
             json={"chat_id": chat_id, "action": action})
-
 
 # --- Klipy GIF ---
 async def get_klipy_gif(keyword: str) -> str | None:
@@ -266,9 +252,9 @@ async def get_klipy_gif(keyword: str) -> str | None:
                 if fmt in files and files[fmt].get("url"):
                     return files[fmt]["url"]
             return None
-    except Exception:
+    except Exception as e:
+        print(f"[get_klipy_gif] Error fetching GIF for '{keyword}': {e}")
         return None
-
 
 # --- Groq AI (text only) ---
 async def ask_groq(messages: list) -> str:
@@ -281,7 +267,6 @@ async def ask_groq(messages: list) -> str:
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
-
 # --- Groq AI (vision) ---
 async def ask_groq_vision(messages: list) -> str:
     async with httpx.AsyncClient(timeout=30) as client:
@@ -293,7 +278,6 @@ async def ask_groq_vision(messages: list) -> str:
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
-
 # --- Download photo as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
     try:
@@ -304,24 +288,24 @@ async def get_photo_base64(file_id: str) -> str | None:
             file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
             img_resp = await client.get(file_url)
             return base64.b64encode(img_resp.content).decode()
-    except Exception:
+    except Exception as e:
+        print(f"[get_photo_base64] Failed to download photo file_id={file_id}: {e}")
         return None
-
 
 # --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
-    extraction_prompt = [
-        {
-            "role": "system",
-            "content": (
-                "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "
-                "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "
-                "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "
-                "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "
-                "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"
-            )
-        },
-        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
+    extraction_prompt = [\
+        {\
+            "role": "system",\
+            "content": (\
+                "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "\
+                "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "\
+                "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "\
+                "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "\
+                "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"\
+            )\
+        },\
+        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}\
     ]
     try:
         result = await ask_groq(extraction_prompt)
@@ -332,9 +316,8 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
             fact = line.replace("FAKTA:", "").strip()
             if fact:
                 await save_memory(chat_id, fact)
-    except Exception:
-        pass
-
+    except Exception as e:
+        print(f"[extract_facts] Failed for chat_id={chat_id}: {e}")
 
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
@@ -350,7 +333,6 @@ async def web_search(query: str) -> str:
         return "\n".join(related)
     else:
         return "No results found."
-
 
 # --- Build system prompt with mood + memories ---
 async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
@@ -371,7 +353,6 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
 
     return full_system, mood, recent_sent
 
-
 # --- Startup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -385,32 +366,25 @@ async def lifespan(app: FastAPI):
     yield
     await db_pool.close()
 
-
 app = FastAPI(lifespan=lifespan)
-
 
 @app.get("/")
 async def root():
     return {"status": "running"}
 
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
 
 @app.post("/proactive/dad")
 async def proactive_dad():
     await send_proactive_message(DAD_ID, "papa")
     return {"ok": True}
 
-
 @app.post("/proactive/mom")
 async def proactive_mom():
     await send_proactive_message(MOM_ID, "mama")
     return {"ok": True}
-
-
 
 # --- Proactive message builder ---
 async def send_proactive_message(chat_id: int, target_name: str):
@@ -441,21 +415,21 @@ async def send_proactive_message(chat_id: int, target_name: str):
     recent_block = "\n".join(f"- {m}" for m in recent_sent[:10]) if recent_sent else "Belum ada."
     mem_block = "\n".join(f"- {m}" for m in memories) if memories else "Belum ada memori."
 
-    proactive_prompt = [
-        {
-            "role": "system",
-            "content": (
-                f"{system_prompt}\n\n"
-                f"Mood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}\n\n"
-                f"Memori jangka panjang:\n{mem_block}\n\n"
-                f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
-                f"Sekarang {time_context}. {time_prompt} "
-                f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "
-                f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
-            )
-        },
-        {"role": "user", "content": f"[proactive message to {target_name}]"}
+    proactive_prompt = [\
+        {\
+            "role": "system",\
+            "content": (\
+                f"{system_prompt}\n\n"\
+                f"Mood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}\n\n"\
+                f"Memori jangka panjang:\n{mem_block}\n\n"\
+                f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"\
+                f"Sekarang {time_context}. {time_prompt} "\
+                f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "\
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "\
+                f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."\
+            )\
+        },\
+        {"role": "user", "content": f"[proactive message to {target_name}]"}\
     ]
 
     try:
@@ -468,9 +442,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
 
         await send_message(chat_id, message)
     except Exception as e:
-        print(f"Proactive message failed: {e}")
-
-
+        print(f"[send_proactive_message] Failed for chat_id={chat_id} ({target_name}): {e}")
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -504,12 +476,12 @@ async def webhook(request: Request):
         if not facts:
             await send_message(chat_id, "belum ada memori tersimpan nih~")
         else:
-            facts_text = "\n".join(f"• {f}" for f in facts)
+            facts_text = "\n".join(f"\u2022 {f}" for f in facts)
             await send_message(chat_id, f"ini yang aku inget:\n{facts_text}")
         return {"ok": True}
     if text == "/mood":
         mood = await get_mood()
-        await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
+        await send_message(chat_id, f"mood aku sekarang: *{mood}* \u2014 {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
     if text.startswith("/setmood "):
         new_mood = text.replace("/setmood ", "").strip().lower()
@@ -530,17 +502,18 @@ async def webhook(request: Request):
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
         if img_b64:
-            vision_messages = [
-                {"role": "system", "content": full_system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": labeled_prompt}
-                ]}
+            vision_messages = [\
+                {"role": "system", "content": full_system},\
+                {"role": "user", "content": [\
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},\
+                    {"type": "text", "text": labeled_prompt}\
+                ]}\
             ]
             try:
                 reply = await ask_groq_vision(vision_messages)
             except Exception as e:
-                reply = f"aduh gagal baca fotonya: {str(e)}"
+                print(f"[webhook] Vision API failed for chat_id={chat_id}: {e}")
+                reply = "aduh, aku lagi nggak bisa baca fotonya nih \u2014 coba lagi bentar ya~"
         else:
             reply = "gagal download fotonya pa/ma, coba kirim lagi~"
         await save_message(chat_id, "user", labeled_prompt)
@@ -553,25 +526,24 @@ async def webhook(request: Request):
         await send_message(chat_id, reply, reply_to=message_id)
         return {"ok": True}
 
-
     # TEXT MESSAGE (normal)
     labeled = f"[from user_id={user_id} @{username}]: {text}"
 
-    search_keywords = [
-        "search", "look up", "cari", "cariin", "carikan", "tolong cari",
-        "siapa", "apa itu", "what is", "who is", "latest", "news", "current",
-        "terbaru", "sekarang", "gimana", "berapa", "kapan", "dimana"
+    search_keywords = [\
+        "search", "look up", "cari", "cariin", "carikan", "tolong cari",\
+        "siapa", "apa itu", "what is", "who is", "latest", "news", "current",\
+        "terbaru", "sekarang", "gimana", "berapa", "kapan", "dimana"\
     ]
     needs_search = any(kw in text.lower() for kw in search_keywords)
 
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu 🔍", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \ud83d\udd0d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu 🔍", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \ud83d\udd0d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu 🔍", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu \ud83d\udd0d", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
@@ -584,7 +556,8 @@ async def webhook(request: Request):
     try:
         reply = await ask_groq(messages)
     except Exception as e:
-        reply = f"something broke lol: {str(e)}"
+        print(f"[webhook] Groq text API failed for chat_id={chat_id}: {e}")
+        reply = "aduh, lagi ada gangguan nih \u2014 bentar ya, coba lagi~"
 
     await save_message(chat_id, "user", labeled)
     await save_message(chat_id, "assistant", reply)
