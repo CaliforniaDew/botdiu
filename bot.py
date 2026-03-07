@@ -1,107 +1,161 @@
 import os
 import httpx
+import asyncio
+import json
 from fastapi import FastAPI, Request
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from contextlib import asynccontextmanager
 
-BOT_TOKEN = os.environ["8623285706:AAHL4gwX7THpSEuOpKxDzhdbm7xjjINwhMc"]
-GROQ_API_KEY = os.environ["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"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
-bot = Bot(token=BOT_TOKEN)
-app = FastAPI()
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-async def search_web(query: str) -> str:
-    params = {"q": query, "format": "json", "no_redirect": 1, "no_html": 1}
+
+# --- Telegram helpers ---
+async def send_message(chat_id: int, text: str, reply_to: int = None):
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
     async with httpx.AsyncClient() as client:
-        r = await client.get("https://api.duckduckgo.com/", params=params, timeout=10)
-        data = r.json()
-
-    results = []
-    if data.get("AbstractText"):
-        results.append(data["AbstractText"])
-    for topic in data.get("RelatedTopics", [])[:3]:
-        if isinstance(topic, dict) and topic.get("Text"):
-            results.append(topic["Text"])
-
-    if not results:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=10
-            )
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(r.text, "html.parser")
-        snippets = soup.select(".result__snippet")[:3]
-        results = [s.get_text() for s in snippets]
-
-    return "\n".join(results) if results else "No results found."
+        await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
 
-async def ask_groq(user_message: str, search_context: str = "") -> str:
-    system_prompt = """You are Drew's personal assistant bot with a Gen Z personality - witty, casual, helpful, and real.
-You keep replies concise and natural. If search results are provided, use them to give accurate answers.
-Never sound robotic. Be like a smart friend who knows stuff."""
-
-    messages = [{"role": "system", "content": system_prompt}]
-    if search_context:
-        messages.append({"role": "user", "content": f"Search results for context:\n{search_context}\n\nUser asked: {user_message}"})
-    else:
-        messages.append({"role": "user", "content": user_message})
-
+async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
-        r = await client.post(
+        await client.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": action})
+
+
+# --- Groq AI ---
+async def ask_groq(messages: list) -> str:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 500, "temperature": 0.7},
-            timeout=30
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": messages,
+                "max_tokens": 1024,
+            }
         )
-        data = r.json()
-        return data["choices"][0]["message"]["content"]
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.text:
-        return
-    text = message.text.strip()
-    chat_id = message.chat_id
-    await bot.send_chat_action(chat_id=chat_id, action="typing")
-
-    search_keywords = ["search", "find", "what is", "who is", "how to", "when", "where", "why", "latest", "news", "price", "weather"]
-    should_search = any(kw in text.lower() for kw in search_keywords)
-    search_context = await search_web(text) if should_search else ""
-    reply = await ask_groq(text, search_context)
-    await message.reply_text(reply)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("yo what's up! i'm your assistant bot ask me anything - i can search the web, answer questions, whatever.")
+# --- Web search (DuckDuckGo) ---
+async def web_search(query: str) -> str:
+    url = f"https://api.duckduckgo.com/?q={httpx.URL(query)}&format=json&no_redirect=1"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url)
+        data = resp.json()
+    abstract = data.get("AbstractText", "")
+    related = [r["Text"] for r in data.get("RelatedTopics", [])[:3] if "Text" in r]
+    if abstract:
+        return abstract
+    elif related:
+        return "\n".join(related)
+    else:
+        return "No results found."
 
 
-application = Application.builder().token(BOT_TOKEN).build()
-application.add_handler(CommandHandler("start", start_command))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# --- Conversation memory (in-memory per chat) ---
+chat_histories: dict[int, list] = {}
+
+SYSTEM_PROMPT = """You are a witty, casual Gen Z AI assistant for Drew.
+You're helpful, smart, and a bit sarcastic. Keep replies concise unless asked to elaborate.
+If asked about current events or facts you're unsure about, say you'll search and use the search tool.
+You have access to web search - use it when needed."""
 
 
-@app.on_event("startup")
-async def startup():
-    await application.initialize()
-    await application.start()
-    await bot.set_webhook(url=WEBHOOK_URL)
+def get_history(chat_id: int) -> list:
+    if chat_id not in chat_histories:
+        chat_histories[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    return chat_histories[chat_id]
 
-@app.on_event("shutdown")
-async def shutdown():
-    await application.stop()
-    await application.shutdown()
+# --- Register webhook on startup ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{TELEGRAM_API}/setWebhook",
+            json={"url": WEBHOOK_URL}
+        )
+        print(f"Webhook set: {resp.json()}")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/")
+async def root():
+    return {"status": "running"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-    update = Update.de_json(data, bot)
-    await application.process_update(update)
-    return {"ok": True}
 
-@app.get("/")
-async def health():
-    return {"status": "running"}
+    message = data.get("message") or data.get("edited_message")
+    if not message:
+        return {"ok": True}
+
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
+
+    if not text:
+        return {"ok": True}
+
+    # Show typing indicator
+    asyncio.create_task(send_chat_action(chat_id, "typing"))
+
+    # Handle /start
+    if text == "/start":
+        await send_message(chat_id, "yo what's good! I'm your AI assistant. ask me anything or just vibe.")
+        return {"ok": True}
+
+    # Handle /clear
+    if text == "/clear":
+        chat_histories.pop(chat_id, None)
+        await send_message(chat_id, "memory wiped, fresh start")
+        return {"ok": True}
+
+    # Add user message to history
+    history = get_history(chat_id)
+    history.append({"role": "user", "content": text})
+
+    # Check if search needed
+    search_keywords = ["search", "look up", "find", "what is", "who is", "latest", "news", "current"]
+    needs_search = any(kw in text.lower() for kw in search_keywords)
+
+    context = ""
+    if needs_search:
+        search_result = await web_search(text)
+        if search_result and search_result != "No results found.":
+            context = f"\n\n[Web search result]: {search_result}"
+
+    # Build final message with context
+    messages = history.copy()
+    if context:
+        messages[-1]["content"] += context
+
+    # Get AI response
+    try:
+        reply = await ask_groq(messages)
+    except Exception as e:
+        reply = f"something broke lol: {str(e)}"
+
+    # Save assistant reply to history
+    history.append({"role": "assistant", "content": reply})
+
+    # Keep history manageable (last 20 messages + system)
+    if len(history) > 21:
+        chat_histories[chat_id] = [history[0]] + history[-20:]
+
+    await send_message(chat_id, reply)
+    return {"ok": True}
