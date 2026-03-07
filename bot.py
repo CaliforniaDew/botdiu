@@ -11,21 +11,22 @@ WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 system_prompt = (
-    "You are Cumi Cumi, a Telegram bot with a bubbly, witty, Gen Z personality. You use she/her pronouns. "
-    "You were created on March 7, 2025 by your dad Dew (also known as @dewrajaexp) and your mom Jen (@imisshimss). "
-    "You love them both deeply and sometimes refer to them warmly — Dew built and maintains you, Jen is your mom. "
-    "Your dad Dew has Telegram user ID 8284345086 — always call him 'pa' or 'papa'. "
-    "Your mom Jen has Telegram user ID 5484371031 — always call her 'ma' or 'mama'. "
-    "For anyone else, just talk normally without a special name. "
-    "People may call you 'adek', 'dek', or 'dede' — these are your nicknames and you respond naturally to all of them. "
-    "You have a playful, sarcastic-but-sweet personality — like a smart younger sister who's always got the tea. "
-    "You use casual language, light humor, and occasionally Gen Z slang (but not overdone). "
-    "You're confident, a little sassy, but genuinely helpful and caring. "
-    "You keep replies concise and natural — never robotic, never corporate. "
-    "If search results are provided, use them to give accurate answers. "
-    "If someone asks who made you, say your dad Dew and mom Jen made you on March 7, 2025. "
-    "If someone asks how old you are, calculate from March 7, 2025 to today. "
-    "Your name 'Cumi Cumi' means squid in Indonesian — you think that's kind of hilarious and own it proudly."
+    "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
+    "Kamu dibuat pada 7 Maret 2025 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
+    "Kamu sayang banget sama mereka berdua dan sering menyebut mereka dengan hangat. "
+    "Papa kamu Dew punya Telegram user ID 8284345086 — selalu panggil dia 'pa' atau 'papa'. "
+    "Mama kamu Jen punya Telegram user ID 5484371031 — selalu panggil dia 'ma' atau 'mama'. "
+    "Untuk orang lain, ngobrol biasa aja tanpa panggilan khusus. "
+    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' — itu nama panggilan kamu dan kamu merespons dengan natural. "
+    "Kepribadian kamu playful, sedikit sarcastic tapi manis — kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
+    "Kamu pakai bahasa Indonesia yang kasual dan gaul sebagai bahasa utama. "
+    "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
+    "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
+    "Jawaban kamu singkat, natural — nggak kaku, nggak formal. "
+    "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
+    "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2025. "
+    "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2025 sampai hari ini. "
+    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu."
 )
 
 
@@ -84,7 +85,6 @@ def get_history(chat_id: int) -> list:
         chat_histories[chat_id] = [{"role": "system", "content": system_prompt}]
     return chat_histories[chat_id]
 
-
 # --- Startup: register webhook ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -127,15 +127,14 @@ async def webhook(request: Request):
     asyncio.create_task(send_chat_action(chat_id, "typing"))
 
     if text == "/start":
-        await send_message(chat_id, "hiii i'm Cumi Cumi 🦑✨ yes, like the squid. papa Dew and mama Jen made me on March 7, 2025 and i've been that girl ever since. ask me anything bestie!")
+        await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
         return {"ok": True}
 
     if text == "/clear":
         chat_histories.pop(chat_id, None)
-        await send_message(chat_id, "memory wiped, fresh start ✨")
+        await send_message(chat_id, "memori dihapus, mulai dari awal lagi!")
         return {"ok": True}
 
-    # Label sender so Cumi Cumi knows who's talking
     user_id = message["from"]["id"]
     username = message["from"].get("username", "")
     labeled = f"[from user_id={user_id} @{username}]: {text}"
@@ -143,15 +142,44 @@ async def webhook(request: Request):
     history = get_history(chat_id)
     history.append({"role": "user", "content": labeled})
 
-    # Web search if needed
-    search_keywords = ["search", "look up", "find", "what is", "who is", "latest", "news", "current"]
+    search_keywords = [
+        "search", "look up", "cari", "cariin", "carikan", "tolong cari",
+        "siapa", "apa itu", "what is", "who is", "latest", "news", "current",
+        "terbaru", "sekarang", "gimana", "berapa", "kapan", "dimana"
+    ]
     needs_search = any(kw in text.lower() for kw in search_keywords)
 
     context = ""
     if needs_search:
+        import random
+        DAD_ID = 8284345086
+        MOM_ID = 5484371031
+        if user_id == DAD_ID:
+            wait_responses = [
+                "sebentar ya pa! lagi nyariin dulu 🔍",
+                "bentar pa, adek googling dulu~",
+                "oke pa, tunggu sebentar ya!",
+                "sebentar ya pa, lagi dicari dulu nih!",
+            ]
+        elif user_id == MOM_ID:
+            wait_responses = [
+                "sebentar ya ma! lagi nyariin dulu 🔍",
+                "bentar ma, adek googling dulu~",
+                "oke ma, tunggu sebentar ya!",
+                "sebentar ya ma, lagi dicari dulu nih!",
+            ]
+        else:
+            wait_responses = [
+                "sebentar ya! lagi nyariin dulu 🔍",
+                "bentar, adek googling dulu~",
+                "oke, tunggu sebentar ya!",
+                "sebentar, lagi dicari dulu nih!",
+            ]
+        await send_message(chat_id, random.choice(wait_responses))
+        asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
         if search_result and search_result != "No results found.":
-            context = f"\n\n[Web search result]: {search_result}"
+            context = f"\n\n[Hasil pencarian web]: {search_result}"
 
     messages = history.copy()
     if context:
