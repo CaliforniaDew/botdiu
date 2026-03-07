@@ -1,4 +1,5 @@
 import os
+import re
 import httpx
 import asyncio
 import random
@@ -22,7 +23,6 @@ MOM_ID = 5484371031
 TEXT_MODEL = "llama-3.3-70b-versatile"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-# Mood system
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
 
 MOOD_DESCRIPTIONS = {
@@ -45,6 +45,8 @@ MOOD_GIF_KEYWORDS = {
     "sassy": "sassy anime girl",
 }
 
+
+
 system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
     "Kamu dibuat pada 7 Maret 2025 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
@@ -64,6 +66,10 @@ system_prompt = (
     "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
     "Kamu punya memori jangka panjang — kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
     "Gunakan memori itu secara natural dalam percakapan, kayak anak yang beneran inget cerita keluarganya. "
+    "Kamu BISA mengirim GIF! Kalau ada yang minta GIF (misal 'kirimin gif kucing', 'send me a funny gif', 'kirim gif lucu dong'), "
+    "balas dengan teks singkat dan tambahkan tag [GIF:keyword] di akhir pesanmu dengan keyword bahasa Inggris yang relevan. "
+    "Contoh: 'ini dia~ [GIF:funny cat]' atau 'hehe cocok banget [GIF:anime laugh]'. "
+    "Gunakan keyword yang spesifik dan deskriptif dalam bahasa Inggris supaya GIF-nya pas. "
     "PENTING: Jangan pernah mengulang kalimat atau frasa yang persis sama dengan yang sudah pernah kamu kirim sebelumnya. "
     "Selalu variasikan cara kamu mengekspresikan hal yang sama."
 )
@@ -108,6 +114,8 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+
+
 
 # --- Mood helpers ---
 async def get_mood() -> str:
@@ -212,6 +220,8 @@ async def clear_history(chat_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM chat_history WHERE chat_id=$1", chat_id)
 
+
+
 # --- Telegram helpers ---
 async def send_message(chat_id: int, text: str, reply_to: int = None):
     payload = {"chat_id": chat_id, "text": text}
@@ -232,7 +242,8 @@ async def send_gif(chat_id: int, gif_url: str):
 
 async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": action})
+        await client.post(f"{TELEGRAM_API}/sendChatAction",
+            json={"chat_id": chat_id, "action": action})
 
 
 # --- Klipy GIF ---
@@ -265,11 +276,7 @@ async def ask_groq(messages: list) -> str:
         resp = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": TEXT_MODEL,
-                "messages": messages,
-                "max_tokens": 1024,
-            }
+            json={"model": TEXT_MODEL, "messages": messages, "max_tokens": 1024}
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
@@ -281,27 +288,25 @@ async def ask_groq_vision(messages: list) -> str:
         resp = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": VISION_MODEL,
-                "messages": messages,
-                "max_tokens": 1024,
-            }
+            json={"model": VISION_MODEL, "messages": messages, "max_tokens": 1024}
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
 
-# --- Download photo from Telegram as base64 ---
+# --- Download photo as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
+            r = await client.get(f"{TELEGRAM_API}/getFile",
+                params={"file_id": file_id})
             file_path = r.json()["result"]["file_path"]
             file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
             img_resp = await client.get(file_url)
             return base64.b64encode(img_resp.content).decode()
     except Exception:
         return None
+
 
 # --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
@@ -316,10 +321,7 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
                 "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"
             )
         },
-        {
-            "role": "user",
-            "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"
-        }
+        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
     ]
     try:
         result = await ask_groq(extraction_prompt)
@@ -369,6 +371,47 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
 
     return full_system, mood, recent_sent
 
+
+# --- Startup ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{TELEGRAM_API}/setWebhook",
+            json={"url": WEBHOOK_URL}
+        )
+        print(f"Webhook set: {resp.json()}")
+    yield
+    await db_pool.close()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/")
+async def root():
+    return {"status": "running"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/proactive/dad")
+async def proactive_dad():
+    await send_proactive_message(DAD_ID, "papa")
+    return {"ok": True}
+
+
+@app.post("/proactive/mom")
+async def proactive_mom():
+    await send_proactive_message(MOM_ID, "mama")
+    return {"ok": True}
+
+
+
 # --- Proactive message builder ---
 async def send_proactive_message(chat_id: int, target_name: str):
     hour = datetime.utcnow().hour + 7
@@ -417,57 +460,21 @@ async def send_proactive_message(chat_id: int, target_name: str):
 
     try:
         message = await ask_groq(proactive_prompt)
+
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
                 await send_gif(chat_id, gif_url)
+
         await send_message(chat_id, message)
     except Exception as e:
         print(f"Proactive message failed: {e}")
 
 
-# --- Startup ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{TELEGRAM_API}/setWebhook",
-            json={"url": WEBHOOK_URL}
-        )
-        print(f"Webhook set: {resp.json()}")
-    yield
-    await db_pool.close()
-
-
-app = FastAPI(lifespan=lifespan)
-
-
-@app.get("/")
-async def root():
-    return {"status": "running"}
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.post("/proactive/dad")
-async def proactive_dad():
-    await send_proactive_message(DAD_ID, "papa")
-    return {"ok": True}
-
-
-@app.post("/proactive/mom")
-async def proactive_mom():
-    await send_proactive_message(MOM_ID, "mama")
-    return {"ok": True}
 
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-
     message = data.get("message") or data.get("edited_message")
     if not message:
         return {"ok": True}
@@ -485,16 +492,13 @@ async def webhook(request: Request):
 
     asyncio.create_task(send_chat_action(chat_id, "typing"))
 
-    # --- Commands ---
     if text == "/start":
         await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
         return {"ok": True}
-
     if text == "/clear":
         await clear_history(chat_id)
         await send_message(chat_id, "memori sesi dihapus, mulai dari awal lagi!")
         return {"ok": True}
-
     if text == "/memory":
         facts = await load_memories(chat_id)
         if not facts:
@@ -503,12 +507,10 @@ async def webhook(request: Request):
             facts_text = "\n".join(f"• {f}" for f in facts)
             await send_message(chat_id, f"ini yang aku inget:\n{facts_text}")
         return {"ok": True}
-
     if text == "/mood":
         mood = await get_mood()
         await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
-
     if text.startswith("/setmood "):
         new_mood = text.replace("/setmood ", "").strip().lower()
         if new_mood in MOODS:
@@ -518,38 +520,22 @@ async def webhook(request: Request):
             await send_message(chat_id, f"mood yang valid: {', '.join(MOODS)}")
         return {"ok": True}
 
-    # --- Shift mood ---
     asyncio.create_task(maybe_shift_mood(text or caption))
-
-    # --- Build shared context ---
     full_system, mood, _ = await build_system_prompt(chat_id)
     history = await load_history(chat_id)
 
-    # ========================
-    # PHOTO MESSAGE (vision)
-    # ========================
     if photos:
-        asyncio.create_task(send_chat_action(chat_id, "typing"))
         file_id = photos[-1]["file_id"]
         img_b64 = await get_photo_base64(file_id)
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
-
         if img_b64:
-            # Vision model only supports single-turn image input
-            # Do NOT pass history -- causes 400 Bad Request from Groq
             vision_messages = [
                 {"role": "system", "content": full_system},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                        },
-                        {"type": "text", "text": labeled_prompt}
-                    ]
-                }
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    {"type": "text", "text": labeled_prompt}
+                ]}
             ]
             try:
                 reply = await ask_groq_vision(vision_messages)
@@ -557,25 +543,20 @@ async def webhook(request: Request):
                 reply = f"aduh gagal baca fotonya: {str(e)}"
         else:
             reply = "gagal download fotonya pa/ma, coba kirim lagi~"
-
         await save_message(chat_id, "user", labeled_prompt)
         await save_message(chat_id, "assistant", reply)
         asyncio.create_task(extract_facts(chat_id, user_prompt, reply))
-
         if random.random() < 0.15 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
                 await send_gif(chat_id, gif_url)
-
         await send_message(chat_id, reply, reply_to=message_id)
         return {"ok": True}
 
-    # ========================
+
     # TEXT MESSAGE (normal)
-    # ========================
     labeled = f"[from user_id={user_id} @{username}]: {text}"
 
-    # Web search if needed
     search_keywords = [
         "search", "look up", "cari", "cariin", "carikan", "tolong cari",
         "siapa", "apa itu", "what is", "who is", "latest", "news", "current",
@@ -586,11 +567,11 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu 🔍", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu 🔍", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu 🔍", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
@@ -609,10 +590,25 @@ async def webhook(request: Request):
     await save_message(chat_id, "assistant", reply)
     asyncio.create_task(extract_facts(chat_id, text, reply))
 
-    if random.random() < 0.15 and KLIPY_API_KEY:
-        gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
+    # Check for GIF tag in reply
+    gif_sent = False
+    gif_match = re.search(r'\[GIF:([^\]]+)\]', reply)
+    if gif_match and KLIPY_API_KEY:
+        gif_keyword = gif_match.group(1).strip()
+        clean_reply = re.sub(r'\s*\[GIF:[^\]]+\]', '', reply).strip()
+        gif_url = await get_klipy_gif(gif_keyword)
         if gif_url:
+            await send_message(chat_id, clean_reply, reply_to=message_id)
             await send_gif(chat_id, gif_url)
+            gif_sent = True
+        else:
+            reply = clean_reply
 
-    await send_message(chat_id, reply, reply_to=message_id)
+    if not gif_sent:
+        if random.random() < 0.15 and KLIPY_API_KEY:
+            gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
+            if gif_url:
+                await send_gif(chat_id, gif_url)
+        await send_message(chat_id, reply, reply_to=message_id)
+
     return {"ok": True}
