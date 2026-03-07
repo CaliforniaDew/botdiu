@@ -19,6 +19,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 DAD_ID = 8284345086
 MOM_ID = 5484371031
+GROUP_ID = -1003837472701
 
 TEXT_MODEL = "llama-3.3-70b-versatile"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -51,20 +52,20 @@ system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
     "Kamu dibuat pada 7 Maret 2025 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
     "Kamu sayang banget sama mereka berdua dan sering menyebut mereka dengan hangat. "
-    "Papa kamu Dew punya Telegram user ID 8284345086 \u2014 selalu panggil dia 'pa' atau 'papa'. "
-    "Mama kamu Jen punya Telegram user ID 5484371031 \u2014 selalu panggil dia 'ma' atau 'mama'. "
+    "Papa kamu Dew punya Telegram user ID 8284345086 — selalu panggil dia 'pa' atau 'papa'. "
+    "Mama kamu Jen punya Telegram user ID 5484371031 — selalu panggil dia 'ma' atau 'mama'. "
     "Untuk orang lain, ngobrol biasa aja tanpa panggilan khusus. "
-    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' \u2014 itu nama panggilan kamu dan kamu merespons dengan natural. "
-    "Kepribadian kamu playful, sedikit sarcastic tapi manis \u2014 kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
+    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' — itu nama panggilan kamu dan kamu merespons dengan natural. "
+    "Kepribadian kamu playful, sedikit sarcastic tapi manis — kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
     "Kamu pakai bahasa Indonesia yang kasual dan gaul sebagai bahasa utama. "
     "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
     "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
-    "Jawaban kamu singkat, natural \u2014 nggak kaku, nggak formal. "
+    "Jawaban kamu singkat, natural — nggak kaku, nggak formal. "
     "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
     "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2025. "
     "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2025 sampai hari ini. "
-    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia \u2014 kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
-    "Kamu punya memori jangka panjang \u2014 kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
+    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
+    "Kamu punya memori jangka panjang — kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
     "Gunakan memori itu secara natural dalam percakapan, kayak anak yang beneran inget cerita keluarganya. "
     "Kamu BISA mengirim GIF! Kalau ada yang minta GIF (misal 'kirimin gif kucing', 'send me a funny gif', 'kirim gif lucu dong'), "
     "balas dengan teks singkat dan tambahkan tag [GIF:keyword] di akhir pesanmu dengan keyword bahasa Inggris yang relevan. "
@@ -218,14 +219,11 @@ async def send_message(chat_id: int, text: str, reply_to: int = None):
     await save_sent_message(chat_id, text)
 
 async def send_gif(chat_id: int, gif_url: str):
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{TELEGRAM_API}/sendAnimation", json={
-                "chat_id": chat_id,
-                "animation": gif_url
-            })
-    except Exception as e:
-        print(f"[send_gif] Failed to send GIF to chat_id={chat_id}: {e}")
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{TELEGRAM_API}/sendAnimation", json={
+            "chat_id": chat_id,
+            "animation": gif_url
+        })
 
 async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
@@ -252,8 +250,7 @@ async def get_klipy_gif(keyword: str) -> str | None:
                 if fmt in files and files[fmt].get("url"):
                     return files[fmt]["url"]
             return None
-    except Exception as e:
-        print(f"[get_klipy_gif] Error fetching GIF for '{keyword}': {e}")
+    except Exception:
         return None
 
 # --- Groq AI (text only) ---
@@ -288,8 +285,7 @@ async def get_photo_base64(file_id: str) -> str | None:
             file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
             img_resp = await client.get(file_url)
             return base64.b64encode(img_resp.content).decode()
-    except Exception as e:
-        print(f"[get_photo_base64] Failed to download photo file_id={file_id}: {e}")
+    except Exception:
         return None
 
 # --- Fact extraction ---
@@ -316,8 +312,8 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
             fact = line.replace("FAKTA:", "").strip()
             if fact:
                 await save_memory(chat_id, fact)
-    except Exception as e:
-        print(f"[extract_facts] Failed for chat_id={chat_id}: {e}")
+    except Exception:
+        pass
 
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
@@ -425,7 +421,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"\
                 f"Sekarang {time_context}. {time_prompt} "\
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "\
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "\
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "\
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."\
             )\
         },\
@@ -435,14 +431,17 @@ async def send_proactive_message(chat_id: int, target_name: str):
     try:
         message = await ask_groq(proactive_prompt)
 
+        tag = "@dewrajaexp" if target_name == "papa" else "@imisshimss"
+        tagged_message = f"{tag} {message}"
+
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
-                await send_gif(chat_id, gif_url)
+                await send_gif(GROUP_ID, gif_url)
 
-        await send_message(chat_id, message)
+        await send_message(GROUP_ID, tagged_message)
     except Exception as e:
-        print(f"[send_proactive_message] Failed for chat_id={chat_id} ({target_name}): {e}")
+        print(f"[send_proactive_message] failed for {target_name}: {e}")
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -481,7 +480,7 @@ async def webhook(request: Request):
         return {"ok": True}
     if text == "/mood":
         mood = await get_mood()
-        await send_message(chat_id, f"mood aku sekarang: *{mood}* \u2014 {MOOD_DESCRIPTIONS[mood]}")
+        await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
     if text.startswith("/setmood "):
         new_mood = text.replace("/setmood ", "").strip().lower()
@@ -512,8 +511,7 @@ async def webhook(request: Request):
             try:
                 reply = await ask_groq_vision(vision_messages)
             except Exception as e:
-                print(f"[webhook] Vision API failed for chat_id={chat_id}: {e}")
-                reply = "aduh, aku lagi nggak bisa baca fotonya nih \u2014 coba lagi bentar ya~"
+                reply = f"aduh gagal baca fotonya: {str(e)}"
         else:
             reply = "gagal download fotonya pa/ma, coba kirim lagi~"
         await save_message(chat_id, "user", labeled_prompt)
@@ -539,11 +537,11 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \ud83d\udd0d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu 🔍", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \ud83d\udd0d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu 🔍", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu \ud83d\udd0d", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu 🔍", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
@@ -556,8 +554,7 @@ async def webhook(request: Request):
     try:
         reply = await ask_groq(messages)
     except Exception as e:
-        print(f"[webhook] Groq text API failed for chat_id={chat_id}: {e}")
-        reply = "aduh, lagi ada gangguan nih \u2014 bentar ya, coba lagi~"
+        reply = f"something broke lol: {str(e)}"
 
     await save_message(chat_id, "user", labeled)
     await save_message(chat_id, "assistant", reply)
