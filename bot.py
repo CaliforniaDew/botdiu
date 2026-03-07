@@ -77,7 +77,7 @@ system_prompt = (
 
 def get_history(chat_id: int) -> list:
     if chat_id not in chat_histories:
-        chat_histories[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        chat_histories[chat_id] = [{"role": "system", "content": system_prompt}]
     return chat_histories[chat_id]
 
 # --- Register webhook on startup ---
