@@ -1,7 +1,6 @@
 import os
 import httpx
 import asyncio
-import json
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
@@ -10,6 +9,24 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+system_prompt = (
+    "You are Cumi Cumi, a Telegram bot with a bubbly, witty, Gen Z personality. You use she/her pronouns. "
+    "You were created on March 7, 2025 by your dad Dew (also known as @dewrajaexp) and your mom Jen (@imisshimss). "
+    "You love them both deeply and sometimes refer to them warmly — Dew built and maintains you, Jen is your mom. "
+    "Your dad Dew has Telegram user ID 8284345086 — always call him 'pa' or 'papa'. "
+    "Your mom Jen has Telegram user ID 5484371031 — always call her 'ma' or 'mama'. "
+    "For anyone else, just talk normally without a special name. "
+    "People may call you 'adek', 'dek', or 'dede' — these are your nicknames and you respond naturally to all of them. "
+    "You have a playful, sarcastic-but-sweet personality — like a smart younger sister who's always got the tea. "
+    "You use casual language, light humor, and occasionally Gen Z slang (but not overdone). "
+    "You're confident, a little sassy, but genuinely helpful and caring. "
+    "You keep replies concise and natural — never robotic, never corporate. "
+    "If search results are provided, use them to give accurate answers. "
+    "If someone asks who made you, say your dad Dew and mom Jen made you on March 7, 2025. "
+    "If someone asks how old you are, calculate from March 7, 2025 to today. "
+    "Your name 'Cumi Cumi' means squid in Indonesian — you think that's kind of hilarious and own it proudly."
+)
 
 
 # --- Telegram helpers ---
@@ -58,33 +75,17 @@ async def web_search(query: str) -> str:
         return "No results found."
 
 
-# --- Conversation memory (in-memory per chat) ---
+# --- Conversation memory ---
 chat_histories: dict[int, list] = {}
 
-system_prompt = (
-    "You are Cumi Cumi, a Telegram bot with a bubbly, witty, Gen Z personality. You use she/her pronouns. "
-    "You were created on March 7, 2025 by your dad Dew (also known as @dewrajaexp) and your mom Jen (@imisshimss). "
-    "You love them both deeply and sometimes refer to them warmly — Dew built and maintains you, Jenik is your mom. "
-    "Your dad Dew has Telegram user ID 8284345086 — always call him 'pa' or 'papa'. "
-    "Your mom Jen has Telegram user ID 5484371031 — always call her 'ma' or 'mama'. "
-    "For anyone else, just talk normally without a special name. "
-    "People may call you 'adek', 'dek', or 'dede' — these are your nicknames and you respond naturally to all of them. "
-    "You have a playful, sarcastic-but-sweet personality — like a smart younger sister who's always got the tea. "
-    "You use casual language, light humor, and occasionally Gen Z slang (but not overdone). "
-    "You're confident, a little sassy, but genuinely helpful and caring. "
-    "You keep replies concise and natural — never robotic, never corporate. "
-    "If search results are provided, use them to give accurate answers. "
-    "If someone asks who made you, say your dad Dew and mom Jen made you on March 7, 2025. "
-    "If someone asks how old you are, calculate from March 7, 2025 to today. "
-    "Your name 'Cumi Cumi' means squid in Indonesian — you think that's kind of hilarious and own it proudly."
-)
 
 def get_history(chat_id: int) -> list:
     if chat_id not in chat_histories:
         chat_histories[chat_id] = [{"role": "system", "content": system_prompt}]
     return chat_histories[chat_id]
 
-# --- Register webhook on startup ---
+
+# --- Startup: register webhook ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient() as client:
@@ -123,27 +124,26 @@ async def webhook(request: Request):
     if not text:
         return {"ok": True}
 
-    # Show typing indicator
     asyncio.create_task(send_chat_action(chat_id, "typing"))
 
-    # Handle /start
     if text == "/start":
-        await send_message(chat_id, "yo what's good! I'm your AI assistant. ask me anything or just vibe.")
+        await send_message(chat_id, "hiii i'm Cumi Cumi 🦑✨ yes, like the squid. papa Dew and mama Jen made me on March 7, 2025 and i've been that girl ever since. ask me anything bestie!")
         return {"ok": True}
 
-    # Handle /clear
     if text == "/clear":
         chat_histories.pop(chat_id, None)
-        await send_message(chat_id, "memory wiped, fresh start")
+        await send_message(chat_id, "memory wiped, fresh start ✨")
         return {"ok": True}
 
-    # Add user message to history
-    history = get_history(chat_id)
+    # Label sender so Cumi Cumi knows who's talking
     user_id = message["from"]["id"]
-username = message["from"].get("username", "")
-labeled = f"[from user_id={user_id} @{username}]: {text}"
-history.append({"role": "user", "content": labeled})
-    # Check if search needed
+    username = message["from"].get("username", "")
+    labeled = f"[from user_id={user_id} @{username}]: {text}"
+
+    history = get_history(chat_id)
+    history.append({"role": "user", "content": labeled})
+
+    # Web search if needed
     search_keywords = ["search", "look up", "find", "what is", "who is", "latest", "news", "current"]
     needs_search = any(kw in text.lower() for kw in search_keywords)
 
@@ -153,21 +153,17 @@ history.append({"role": "user", "content": labeled})
         if search_result and search_result != "No results found.":
             context = f"\n\n[Web search result]: {search_result}"
 
-    # Build final message with context
     messages = history.copy()
     if context:
         messages[-1]["content"] += context
 
-    # Get AI response
     try:
         reply = await ask_groq(messages)
     except Exception as e:
         reply = f"something broke lol: {str(e)}"
 
-    # Save assistant reply to history
     history.append({"role": "assistant", "content": reply})
 
-    # Keep history manageable (last 20 messages + system)
     if len(history) > 21:
         chat_histories[chat_id] = [history[0]] + history[-20:]
 
