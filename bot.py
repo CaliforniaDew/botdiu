@@ -5,8 +5,8 @@ import json
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+BOT_TOKEN = os.environ["8623285706:AAHL4gwX7THpSEuOpKxDzhdbm7xjjINwhMc"]
+GROQ_API_KEY = os.environ["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"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
