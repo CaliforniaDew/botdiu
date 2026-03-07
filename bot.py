@@ -1,14 +1,19 @@
 import os
 import httpx
 import asyncio
+import random
+import asyncpg
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+DAD_ID = 8284345086
+MOM_ID = 5484371031
 
 system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
@@ -29,97 +34,145 @@ system_prompt = (
     "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu."
 )
 
+db_pool = None
+
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                fact TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
+async def load_history(chat_id):
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT role, content FROM chat_history WHERE chat_id=$1 ORDER BY id DESC LIMIT 20", chat_id)
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+async def save_message(chat_id, role, content):
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO chat_history (chat_id, role, content) VALUES ($1,$2,$3)", chat_id, role, content)
+        await conn.execute("""
+            DELETE FROM chat_history WHERE chat_id=$1 AND id NOT IN (
+                SELECT id FROM chat_history WHERE chat_id=$1 ORDER BY id DESC LIMIT 30)
+        """, chat_id)
+
+async def load_memories(chat_id):
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT fact FROM memories WHERE chat_id=$1 ORDER BY id DESC LIMIT 20", chat_id)
+    return [r["fact"] for r in rows]
+
+async def save_memory(chat_id, fact):
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO memories (chat_id, fact) VALUES ($1,$2)", chat_id, fact)
+
+async def clear_history(chat_id):
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM chat_history WHERE chat_id=$1", chat_id)
 
 # --- Telegram helpers ---
-async def send_message(chat_id: int, text: str, reply_to: int = None):
+async def send_message(chat_id, text, reply_to=None):
     payload = {"chat_id": chat_id, "text": text}
     if reply_to:
         payload["reply_to_message_id"] = reply_to
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
-
-async def send_chat_action(chat_id: int, action: str = "typing"):
+async def send_chat_action(chat_id, action="typing"):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": action})
 
-
 # --- Groq AI ---
-async def ask_groq(messages: list) -> str:
+async def ask_groq(messages):
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": messages,
-                "max_tokens": 1024,
-            }
+            json={"model": "llama-3.3-70b-versatile", "messages": messages, "max_tokens": 1024}
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
+# --- Fact extraction ---
+async def extract_facts(chat_id, user_text, assistant_reply):
+    extraction_prompt = [
+        {"role": "system", "content": (
+            "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "
+            "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "
+            "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "
+            "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "
+            "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'")},
+        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
+    ]
+    try:
+        result = await ask_groq(extraction_prompt)
+        if "TIDAK ADA" in result:
+            return
+        for line in result.splitlines():
+            if line.strip().startswith("FAKTA:"):
+                fact = line.replace("FAKTA:", "").strip()
+                if fact:
+                    await save_memory(chat_id, fact)
+    except Exception:
+        pass
 
-# --- Web search (DuckDuckGo) ---
-async def web_search(query: str) -> str:
+# --- Web search ---
+async def web_search(query):
     url = f"https://api.duckduckgo.com/?q={httpx.URL(query)}&format=json&no_redirect=1"
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
-        data = resp.json()
+        data = (await client.get(url)).json()
     abstract = data.get("AbstractText", "")
     related = [r["Text"] for r in data.get("RelatedTopics", [])[:3] if "Text" in r]
-    if abstract:
-        return abstract
-    elif related:
-        return "\n".join(related)
-    else:
-        return "No results found."
+    return abstract or ("\n".join(related) if related else "No results found.")
 
-
-# --- Conversation memory ---
-chat_histories: dict[int, list] = {}
-
-
-def get_history(chat_id: int) -> list:
-    if chat_id not in chat_histories:
-        chat_histories[chat_id] = [{"role": "system", "content": system_prompt}]
-    return chat_histories[chat_id]
-
-# --- Startup: register webhook ---
+# --- Startup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await init_db()
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{TELEGRAM_API}/setWebhook",
-            json={"url": WEBHOOK_URL}
-        )
+        resp = await client.post(f"{TELEGRAM_API}/setWebhook", json={"url": WEBHOOK_URL})
         print(f"Webhook set: {resp.json()}")
     yield
-
+    await db_pool.close()
 
 app = FastAPI(lifespan=lifespan)
-
 
 @app.get("/")
 async def root():
     return {"status": "running"}
-
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
-
     message = data.get("message") or data.get("edited_message")
     if not message:
         return {"ok": True}
 
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
+    user_id = message["from"]["id"]
+    username = message["from"].get("username", "")
 
     if not text:
         return {"ok": True}
@@ -131,16 +184,29 @@ async def webhook(request: Request):
         return {"ok": True}
 
     if text == "/clear":
-        chat_histories.pop(chat_id, None)
-        await send_message(chat_id, "memori dihapus, mulai dari awal lagi!")
+        await clear_history(chat_id)
+        await send_message(chat_id, "memori sesi dihapus, mulai dari awal lagi!")
         return {"ok": True}
 
-    user_id = message["from"]["id"]
-    username = message["from"].get("username", "")
-    labeled = f"[from user_id={user_id} @{username}]: {text}"
+    if text == "/memory":
+        facts = await load_memories(chat_id)
+        if not facts:
+            await send_message(chat_id, "belum ada memori tersimpan nih~")
+        else:
+            facts_text = "\n".join(f"• {f}" for f in facts)
+            await send_message(chat_id, f"ini yang aku inget:\n{facts_text}")
+        return {"ok": True}
 
-    history = get_history(chat_id)
-    history.append({"role": "user", "content": labeled})
+    labeled = f"[from user_id={user_id} @{username}]: {text}"
+    history = await load_history(chat_id)
+    memories = await load_memories(chat_id)
+
+    full_system = system_prompt
+    if memories:
+        mem_block = "\n".join(f"- {m}" for m in memories)
+        full_system += f"\n\nMemori jangka panjang yang kamu ingat:\n{mem_block}"
+
+    messages = [{"role": "system", "content": full_system}] + history
 
     search_keywords = [
         "search", "look up", "cari", "cariin", "carikan", "tolong cari",
@@ -151,49 +217,27 @@ async def webhook(request: Request):
 
     context = ""
     if needs_search:
-        import random
-        DAD_ID = 8284345086
-        MOM_ID = 5484371031
         if user_id == DAD_ID:
-            wait_responses = [
-                "sebentar ya pa! lagi nyariin dulu 🔍",
-                "bentar pa, adek googling dulu~",
-                "oke pa, tunggu sebentar ya!",
-                "sebentar ya pa, lagi dicari dulu nih!",
-            ]
+            waits = ["sebentar ya pa! lagi nyariin dulu", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"]
         elif user_id == MOM_ID:
-            wait_responses = [
-                "sebentar ya ma! lagi nyariin dulu 🔍",
-                "bentar ma, adek googling dulu~",
-                "oke ma, tunggu sebentar ya!",
-                "sebentar ya ma, lagi dicari dulu nih!",
-            ]
+            waits = ["sebentar ya ma! lagi nyariin dulu", "bentar ma, adek googling dulu~", "oke ma, tunggu sebentar ya!"]
         else:
-            wait_responses = [
-                "sebentar ya! lagi nyariin dulu 🔍",
-                "bentar, adek googling dulu~",
-                "oke, tunggu sebentar ya!",
-                "sebentar, lagi dicari dulu nih!",
-            ]
-        await send_message(chat_id, random.choice(wait_responses))
+            waits = ["sebentar ya! lagi nyariin dulu", "bentar, adek googling dulu~", "oke, tunggu sebentar ya!"]
+        await send_message(chat_id, random.choice(waits))
         asyncio.create_task(send_chat_action(chat_id, "typing"))
-        search_result = await web_search(text)
-        if search_result and search_result != "No results found.":
-            context = f"\n\n[Hasil pencarian web]: {search_result}"
+        result = await web_search(text)
+        if result and result != "No results found.":
+            context = f"\n\n[Hasil pencarian web]: {result}"
 
-    messages = history.copy()
-    if context:
-        messages[-1]["content"] += context
+    messages.append({"role": "user", "content": labeled + context})
 
     try:
         reply = await ask_groq(messages)
     except Exception as e:
         reply = f"something broke lol: {str(e)}"
 
-    history.append({"role": "assistant", "content": reply})
-
-    if len(history) > 21:
-        chat_histories[chat_id] = [history[0]] + history[-20:]
-
+    await save_message(chat_id, "user", labeled)
+    await save_message(chat_id, "assistant", reply)
+    asyncio.create_task(extract_facts(chat_id, text, reply))
     await send_message(chat_id, reply)
     return {"ok": True}
