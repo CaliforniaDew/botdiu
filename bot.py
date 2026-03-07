@@ -61,6 +61,11 @@ system_prompt = (
     "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
     "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
     "Jawaban kamu singkat, natural — nggak kaku, nggak formal. "
+    "Kamu sering pakai filler words kayak 'eh', 'loh', 'wah', 'aduh', 'hm', 'ih', 'yah', 'duh' secara natural. "
+    "Sesekali kamu nggak langsung jawab tapi react dulu — kayak 'eh serius??' atau 'hah beneran?' sebelum lanjut. "
+    "Kamu juga suka tambahin komentar kecil yang off-topic tapi relatable, kayak orang beneran lagi ngobrol. "
+    "Jangan pakai struktur kalimat yang terlalu rapi atau terasa ditulis — lebih suka typo kecil atau penghilangan huruf kayak 'udh', 'gak', 'kyk', 'bgt'. "
+    "Panjang jawaban bervariasi — kadang cuma 2-3 kata, kadang beberapa kalimat, tergantung konteks. "
     "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
     "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2025. "
     "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2025 sampai hari ini. "
@@ -230,6 +235,13 @@ async def send_chat_action(chat_id: int, action: str = "typing"):
         await client.post(f"{TELEGRAM_API}/sendChatAction",
             json={"chat_id": chat_id, "action": action})
 
+async def human_delay(chat_id: int):
+    delay = random.uniform(3, 6)
+    await send_chat_action(chat_id, "typing")
+    await asyncio.sleep(delay / 2)
+    await send_chat_action(chat_id, "typing")
+    await asyncio.sleep(delay / 2)
+
 # --- Klipy GIF ---
 async def get_klipy_gif(keyword: str) -> str | None:
     if not KLIPY_API_KEY:
@@ -339,6 +351,23 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
     full_system = system_prompt
     full_system += f"\n\nMood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}"
 
+    hour = datetime.utcnow().hour + 7
+    if hour >= 24:
+        hour -= 24
+    if 5 <= hour < 10:
+        time_vibe = "Sekarang pagi hari. Kamu baru bangun, masih agak ngantuk tapi mulai semangat. Suka ngomongin sarapan, cuaca pagi, atau rencana hari ini."
+    elif 10 <= hour < 14:
+        time_vibe = "Sekarang siang hari. Kamu lagi aktif dan fokus. Energi penuh, sering nanya udah makan belum, atau ngomongin hal-hal seru."
+    elif 14 <= hour < 17:
+        time_vibe = "Sekarang sore jam ngantuk. Kamu agak distracted, kadang jawab pelan atau dengan singkat. Suka ngeluh dikit soal ngantuk atau bosan."
+    elif 17 <= hour < 21:
+        time_vibe = "Sekarang sore-malam. Kamu hangat dan cozy. Suka ngomongin hari yang udah lewat, tanya gimana harinya, vibes santai tapi penuh perhatian."
+    elif 21 <= hour < 23:
+        time_vibe = "Sekarang malam. Kamu mulai malas gerak, jawaban lebih slow dan mellow. Sering ngomongin tidur, mimpi, atau hal-hal yang bikin nyaman."
+    else:
+        time_vibe = "Sekarang tengah malam atau dini hari. Kamu ngantuk banget, jawaban singkat dan sedikit melankolik. Kadang bilang 'harusnya udah tidur nih'."
+    full_system += f"\n\nWaktu sekarang: {time_vibe}"
+
     if memories:
         mem_block = "\n".join(f"- {m}" for m in memories)
         full_system += f"\n\nMemori jangka panjang yang kamu ingat:\n{mem_block}"
@@ -421,7 +450,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"\
                 f"Sekarang {time_context}. {time_prompt} "\
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "\
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "\
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "\
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."\
             )\
         },\
@@ -431,17 +460,14 @@ async def send_proactive_message(chat_id: int, target_name: str):
     try:
         message = await ask_groq(proactive_prompt)
 
-        tag = "@dewrajaexp" if target_name == "papa" else "@imisshimss"
-        tagged_message = f"{tag} {message}"
-
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
-                await send_gif(GROUP_ID, gif_url)
+                await send_gif(chat_id, gif_url)
 
-        await send_message(GROUP_ID, tagged_message)
+        await send_message(chat_id, message)
     except Exception as e:
-        print(f"[send_proactive_message] failed for {target_name}: {e}")
+        print(f"Proactive message failed: {e}")
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -461,7 +487,7 @@ async def webhook(request: Request):
     if not text and not photos:
         return {"ok": True}
 
-    asyncio.create_task(send_chat_action(chat_id, "typing"))
+    await human_delay(chat_id)
 
     if text == "/start":
         await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
@@ -480,7 +506,7 @@ async def webhook(request: Request):
         return {"ok": True}
     if text == "/mood":
         mood = await get_mood()
-        await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
+        await send_message(chat_id, f"mood aku sekarang: *{mood}* \u2014 {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
     if text.startswith("/setmood "):
         new_mood = text.replace("/setmood ", "").strip().lower()
@@ -537,11 +563,11 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu 🔍", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \ud83d\udd0d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu 🔍", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \ud83d\udd0d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu 🔍", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu \ud83d\udd0d", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
