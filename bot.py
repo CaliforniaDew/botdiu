@@ -275,7 +275,7 @@ async def ask_groq(messages: list) -> str:
         return resp.json()["choices"][0]["message"]["content"]
 
 
-# --- Groq AI (vision --- text + image) ---
+# --- Groq AI (vision) ---
 async def ask_groq_vision(messages: list) -> str:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -302,7 +302,6 @@ async def get_photo_base64(file_id: str) -> str | None:
             return base64.b64encode(img_resp.content).decode()
     except Exception:
         return None
-
 
 # --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
@@ -369,6 +368,7 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
         full_system += f"\n\nPesan yang sudah pernah kamu kirim (JANGAN diulang persis):\n{sent_block}"
 
     return full_system, mood, recent_sent
+
 # --- Proactive message builder ---
 async def send_proactive_message(chat_id: int, target_name: str):
     hour = datetime.utcnow().hour + 7
@@ -408,7 +408,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
                 f"Sekarang {time_context}. {time_prompt} "
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja -- langsung ke intinya dengan cara yang menarik. "
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
             )
         },
@@ -424,6 +424,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
         await send_message(chat_id, message)
     except Exception as e:
         print(f"Proactive message failed: {e}")
+
 
 # --- Startup ---
 @asynccontextmanager
@@ -463,7 +464,6 @@ async def proactive_mom():
     await send_proactive_message(MOM_ID, "mama")
     return {"ok": True}
 
-
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
@@ -480,13 +480,12 @@ async def webhook(request: Request):
     caption = message.get("caption", "")
     photos = message.get("photo")
 
-    # Must have text or photo
     if not text and not photos:
         return {"ok": True}
 
     asyncio.create_task(send_chat_action(chat_id, "typing"))
 
-    # --- Commands (text only) ---
+    # --- Commands ---
     if text == "/start":
         await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
         return {"ok": True}
@@ -501,13 +500,13 @@ async def webhook(request: Request):
         if not facts:
             await send_message(chat_id, "belum ada memori tersimpan nih~")
         else:
-            facts_text = "\n".join(f"\u2022 {f}" for f in facts)
+            facts_text = "\n".join(f"• {f}" for f in facts)
             await send_message(chat_id, f"ini yang aku inget:\n{facts_text}")
         return {"ok": True}
 
     if text == "/mood":
         mood = await get_mood()
-        await send_message(chat_id, f"mood aku sekarang: *{mood}* --- {MOOD_DESCRIPTIONS[mood]}")
+        await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
 
     if text.startswith("/setmood "):
@@ -526,39 +525,32 @@ async def webhook(request: Request):
     full_system, mood, _ = await build_system_prompt(chat_id)
     history = await load_history(chat_id)
 
-
     # ========================
     # PHOTO MESSAGE (vision)
     # ========================
     if photos:
         asyncio.create_task(send_chat_action(chat_id, "typing"))
-
-        # Get highest resolution photo
         file_id = photos[-1]["file_id"]
         img_b64 = await get_photo_base64(file_id)
-
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
 
         if img_b64:
-            # Build vision messages - history as text, then new image message
-            vision_messages = [{"role": "system", "content": full_system}]
-            for h in history:
-                vision_messages.append({"role": h["role"], "content": h["content"]})
-            vision_messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                    },
-                    {
-                        "type": "text",
-                        "text": labeled_prompt
-                    }
-                ]
-            })
-
+            # Vision model only supports single-turn image input
+            # Do NOT pass history -- causes 400 Bad Request from Groq
+            vision_messages = [
+                {"role": "system", "content": full_system},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                        },
+                        {"type": "text", "text": labeled_prompt}
+                    ]
+                }
+            ]
             try:
                 reply = await ask_groq_vision(vision_messages)
             except Exception as e:
@@ -583,6 +575,7 @@ async def webhook(request: Request):
     # ========================
     labeled = f"[from user_id={user_id} @{username}]: {text}"
 
+    # Web search if needed
     search_keywords = [
         "search", "look up", "cari", "cariin", "carikan", "tolong cari",
         "siapa", "apa itu", "what is", "who is", "latest", "news", "current",
