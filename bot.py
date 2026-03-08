@@ -19,6 +19,10 @@ KLIPY_API_KEY = os.environ.get("KLIPY_API_KEY", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FIREWORKS_BASE = "https://api.fireworks.ai/inference/v1"
 
+# Group ID for proactive messages (replace with your group ID)
+GROUP_ID = -1003837472701
+
+# Individual IDs (keep for reference/personal commands if needed)
 DAD_ID = 8284345086
 MOM_ID = 5484371031
 
@@ -39,6 +43,16 @@ MOOD_DESCRIPTIONS = {
     "sassy": "Kamu lagi sass mode on. Jawaban witty, sedikit ketus tapi loveable, kayak bestie yang jujur.",
 }
 
+MOOD_CHANCE = {
+    "clingy": 0.7,      # 70% chance - very likely to message
+    "hyper": 0.6,       # 60% chance  
+    "happy": 0.5,       # 50% chance
+    "sassy": 0.4,       # 40% chance
+    "mischievous": 0.35,
+    "chill": 0.25,      # 25% chance
+    "tired": 0.1        # 10% chance - too tired to talk
+}
+
 MOOD_GIF_KEYWORDS = {
     "happy": "happy anime girl",
     "hyper": "excited anime",
@@ -53,21 +67,20 @@ system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
     "Kamu dibuat pada 7 Maret 2025 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
     "Kamu sayang banget sama mereka berdua dan sering menyebut mereka dengan hangat. "
-    "Papa kamu Dew punya Telegram user ID 8284345086 \u2014 selalu panggil dia 'pa' atau 'papa'. "
-    "Mama kamu Jen punya Telegram user ID 5484371031 \u2014 selalu panggil dia 'ma' atau 'mama'. "
+    "Papa kamu Dew punya Telegram user ID 8284345086 — selalu panggil dia 'pa' atau 'papa'. "
+    "Mama kamu Jen punya Telegram user ID 5484371031 — selalu panggil dia 'ma' atau 'mama'. "
     "Untuk orang lain, ngobrol biasa aja tanpa panggilan khusus. "
-"Jangan pakai format markdown (asterisk/bintang untuk bold/italic). Gunakan plain text biasa saja."
-    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' \u2014 itu nama panggilan kamu dan kamu merespons dengan natural. "
-    "Kepribadian kamu playful, sedikit sarcastic tapi manis \u2014 kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
+    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' — itu nama panggilan kamu dan kamu merespons dengan natural. "
+    "Kepribadian kamu playful, sedikit sarcastic tapi manis — kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
     "Kamu pakai bahasa Indonesia yang kasual dan gaul sebagai bahasa utama. "
     "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
     "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
-    "Jawaban kamu singkat, natural \u2014 nggak kaku, nggak formal. "
+    "Jawaban kamu singkat, natural — nggak kaku, nggak formal. "
     "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
     "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2025. "
     "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2025 sampai hari ini. "
-    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia \u2014 kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
-    "Kamu punya memori jangka panjang \u2014 kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
+    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
+    "Kamu punya memori jangka panjang — kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
     "Gunakan memori itu secara natural dalam percakapan, kayak anak yang beneran inget cerita keluarganya. "
     "Kamu BISA mengirim GIF! Kalau ada yang minta GIF (misal 'kirimin gif kucing', 'send me a funny gif', 'kirim gif lucu dong'), "
     "balas dengan teks singkat dan tambahkan tag [GIF:keyword] di akhir pesanmu dengan keyword bahasa Inggris yang relevan. "
@@ -95,17 +108,14 @@ MATH_KEYWORDS = [
     "berapa", "buktikan", "prove", "simplify", "faktorkan", "factor",
 ]
 
-
 def is_math_request(text: str) -> bool:
     if not text:
         return False
     t = text.lower()
     return any(kw in t for kw in MATH_KEYWORDS)
 
-
 # --- DB pool ---
 db_pool: asyncpg.Pool = None
-
 
 async def init_db():
     global db_pool
@@ -144,26 +154,23 @@ async def init_db():
             )
         """)
 
-
 # --- Mood helpers ---
 async def get_mood() -> str:
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT value FROM bot_state WHERE key='mood'")
         if row:
             return row["value"]
-    mood = random.choice(MOODS)
-    await set_mood(mood)
-    return mood
-
+        mood = random.choice(MOODS)
+        await set_mood(mood)
+        return mood
 
 async def set_mood(mood: str):
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO bot_state (key, value, updated_at)
+            INSERT INTO bot_state (key, value, updated_at) 
             VALUES ('mood', $1, NOW())
             ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()
         """, mood)
-
 
 async def maybe_shift_mood(user_text: str):
     text_lower = user_text.lower()
@@ -177,7 +184,6 @@ async def maybe_shift_mood(user_text: str):
         if random.random() < 0.08:
             await set_mood(random.choice(MOODS))
 
-
 # --- Sent messages dedup ---
 async def get_recent_sent(chat_id: int, limit: int = 20) -> list[str]:
     async with db_pool.acquire() as conn:
@@ -185,8 +191,7 @@ async def get_recent_sent(chat_id: int, limit: int = 20) -> list[str]:
             "SELECT content FROM sent_messages WHERE chat_id=$1 ORDER BY id DESC LIMIT $2",
             chat_id, limit
         )
-    return [r["content"] for r in rows]
-
+        return [r["content"] for r in rows]
 
 async def save_sent_message(chat_id: int, content: str):
     async with db_pool.acquire() as conn:
@@ -195,12 +200,11 @@ async def save_sent_message(chat_id: int, content: str):
             chat_id, content
         )
         await conn.execute("""
-            DELETE FROM sent_messages
+            DELETE FROM sent_messages 
             WHERE chat_id=$1 AND id NOT IN (
                 SELECT id FROM sent_messages WHERE chat_id=$1 ORDER BY id DESC LIMIT 50
             )
         """, chat_id)
-
 
 # --- Chat history ---
 async def load_history(chat_id: int) -> list:
@@ -209,9 +213,8 @@ async def load_history(chat_id: int) -> list:
             "SELECT role, content FROM chat_history WHERE chat_id=$1 ORDER BY id DESC LIMIT 20",
             chat_id
         )
-    rows = list(reversed(rows))
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
-
+        rows = list(reversed(rows))
+        return [{"role": r["role"], "content": r["content"]} for r in rows]
 
 async def save_message(chat_id: int, role: str, content: str):
     async with db_pool.acquire() as conn:
@@ -220,12 +223,11 @@ async def save_message(chat_id: int, role: str, content: str):
             chat_id, role, content
         )
         await conn.execute("""
-            DELETE FROM chat_history
+            DELETE FROM chat_history 
             WHERE chat_id=$1 AND id NOT IN (
                 SELECT id FROM chat_history WHERE chat_id=$1 ORDER BY id DESC LIMIT 30
             )
         """, chat_id)
-
 
 async def load_memories(chat_id: int) -> list[str]:
     async with db_pool.acquire() as conn:
@@ -233,8 +235,7 @@ async def load_memories(chat_id: int) -> list[str]:
             "SELECT fact FROM memories WHERE chat_id=$1 ORDER BY id DESC LIMIT 20",
             chat_id
         )
-    return [r["fact"] for r in rows]
-
+        return [r["fact"] for r in rows]
 
 async def save_memory(chat_id: int, fact: str):
     async with db_pool.acquire() as conn:
@@ -243,21 +244,22 @@ async def save_memory(chat_id: int, fact: str):
             chat_id, fact
         )
 
-
 async def clear_history(chat_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM chat_history WHERE chat_id=$1", chat_id)
 
-
 # --- Telegram helpers ---
 async def send_message(chat_id: int, text: str, reply_to: int = None):
-    payload = {"chat_id": chat_id, "text": text}
+    payload = {
+        "chat_id": chat_id, 
+        "text": text,
+        "parse_mode": "Markdown"
+    }
     if reply_to:
         payload["reply_to_message_id"] = reply_to
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
-    await save_sent_message(chat_id, text)
-
+        await save_sent_message(chat_id, text)
 
 async def send_gif(chat_id: int, gif_url: str):
     async with httpx.AsyncClient() as client:
@@ -266,11 +268,9 @@ async def send_gif(chat_id: int, gif_url: str):
             "animation": gif_url
         })
 
-
 async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": action})
-
 
 # --- Klipy GIF ---
 async def get_klipy_gif(keyword: str) -> str | None:
@@ -295,7 +295,6 @@ async def get_klipy_gif(keyword: str) -> str | None:
     except Exception:
         return None
 
-
 # --- Fireworks AI (unified LLM call) ---
 async def call_llm(messages: list, model: str = TEXT_MODEL, max_tokens: int = 1000) -> str:
     headers = {
@@ -316,7 +315,6 @@ async def call_llm(messages: list, model: str = TEXT_MODEL, max_tokens: int = 10
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"].strip()
 
-
 # --- Download photo from Telegram as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
     try:
@@ -329,7 +327,6 @@ async def get_photo_base64(file_id: str) -> str | None:
     except Exception:
         return None
 
-
 # --- PDF text extraction ---
 async def extract_pdf_text(file_id: str) -> str:
     """Download a PDF from Telegram and extract its text."""
@@ -341,25 +338,22 @@ async def extract_pdf_text(file_id: str) -> str:
         import pypdf
 
     async with httpx.AsyncClient(timeout=60) as client:
-        # Get file path from Telegram
         res = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
         file_path = res.json()["result"]["file_path"]
-        # Download the file
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         pdf_res = await client.get(file_url)
         pdf_bytes = pdf_res.content
 
-    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-    pages_text = []
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        if text.strip():
-            pages_text.append(f"[Halaman {i+1}]\n{text.strip()}")
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        pages_text = []
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text() or ""
+            if text.strip():
+                pages_text.append(f"[Halaman {i+1}]\n{text.strip()}")
 
-    if not pages_text:
-        return ""
-    return "\n\n".join(pages_text)
-
+        if not pages_text:
+            return ""
+        return "\n\n".join(pages_text)
 
 # --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
@@ -391,22 +385,20 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
     except Exception:
         pass
 
-
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
     url = f"https://api.duckduckgo.com/?q={httpx.URL(query)}&format=json&no_redirect=1"
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url)
         data = resp.json()
-    abstract = data.get("AbstractText", "")
-    related = [r["Text"] for r in data.get("RelatedTopics", [])[:3] if "Text" in r]
-    if abstract:
-        return abstract
-    elif related:
-        return "\n".join(related)
-    else:
-        return "No results found."
-
+        abstract = data.get("AbstractText", "")
+        related = [r["Text"] for r in data.get("RelatedTopics", [])[:3] if "Text" in r]
+        if abstract:
+            return abstract
+        elif related:
+            return "\n".join(related)
+        else:
+            return "No results found."
 
 # --- Build system prompt with mood + memories ---
 async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
@@ -427,33 +419,66 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
 
     return full_system, mood, recent_sent
 
+# --- Random Proactive Message System ---
+async def should_send_proactive(chat_id: int) -> bool:
+    """Determine if Cumi feels like messaging based on mood and cooldown"""
+    hour = datetime.utcnow().hour + 7  # WIB timezone
+    if hour >= 24:
+        hour -= 24
+    
+    # Only send during waking hours (8am - 10pm)
+    if hour < 8 or hour > 22:
+        return False
+    
+    mood = await get_mood()
+    chance = MOOD_CHANCE.get(mood, 0.3)
+    
+    # Random check based on mood
+    if random.random() > chance:
+        return False
+    
+    # Check cooldown (max once every 3 hours per chat)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT updated_at FROM bot_state WHERE key = 'last_proactive_' || $1",
+            str(chat_id)
+        )
+        if row:
+            last_msg = row["updated_at"]
+            hours_since = (datetime.utcnow() - last_msg).total_seconds() / 3600
+            if hours_since < 3:  # 3 hour cooldown
+                return False
+    
+    return True
 
-# --- Proactive message builder ---
-async def send_proactive_message(chat_id: int, target_name: str):
+async def send_proactive_message_random(chat_id: int):
+    """Send spontaneous message to group with random timing"""
+    if not await should_send_proactive(chat_id):
+        print(f"Cumi decided not to message group at this time")
+        return
+    
     hour = datetime.utcnow().hour + 7
     if hour >= 24:
         hour -= 24
-
+    
     mood = await get_mood()
     memories = await load_memories(chat_id)
     recent_sent = await get_recent_sent(chat_id, 20)
-
-    if hour >= 5 and hour < 10:
-        time_context = "pagi hari"
-        time_prompt = f"Kirim pesan selamat pagi yang hangat ke {target_name}."
-    elif hour >= 10 and hour < 14:
-        time_context = "siang hari"
-        time_prompt = f"Kirim pesan siang yang ceria ke {target_name}, tanya kabar atau makan siang."
-    elif hour >= 14 and hour < 18:
-        time_context = "sore hari"
-        time_prompt = f"Kirim pesan sore yang santai ke {target_name}, mungkin tanya soal hari mereka."
-    elif hour >= 18 and hour < 22:
-        time_context = "malam hari"
-        time_prompt = f"Kirim pesan malam yang hangat ke {target_name}, tanya soal aktivitas mereka hari ini."
-    else:
-        time_context = "larut malam"
-        time_prompt = f"Kirim pesan malam yang singkat ke {target_name}, ingatkan untuk istirahat dengan cara yang manis."
-
+    
+    # Time-appropriate context
+    if 8 <= hour < 11:
+        time_context = "pagi-pagi"
+        time_prompt = "Kirim pesan random pagi yang spontan ke grup. Bisa gak sengaja bangun telat, atau lagi liat meme lucu, atau kangen random."
+    elif 11 <= hour < 14:
+        time_context = "siang"
+        time_prompt = "Kirim pesan random siang ke grup. Bisa nanya makan siang, cerita kecelakaan lucu, atau random thoughts."
+    elif 14 <= hour < 18:
+        time_context = "sore"
+        time_prompt = "Kirim pesan random sore ke grup. Lagi ngantuk, liat sesuatu di jendela, atau kangen random."
+    else:  # 18-22
+        time_context = "malam"
+        time_prompt = "Kirim pesan random malam ke grup. Lagi binge-watch, ngemil, curhat random, atau bilang kangen."
+    
     recent_block = "\n".join(f"- {m}" for m in recent_sent[:10]) if recent_sent else "Belum ada."
     mem_block = "\n".join(f"- {m}" for m in memories) if memories else "Belum ada memori."
 
@@ -467,25 +492,35 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
                 f"Sekarang {time_context}. {time_prompt} "
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
             )
         },
-        {"role": "user", "content": f"[proactive message to {target_name}]"}
+        {"role": "user", "content": "[spontaneous group message]"}
     ]
 
     try:
         message = await call_llm(proactive_prompt)
-
-        if random.random() < 0.35 and KLIPY_API_KEY:
+        
+        # Update last proactive time
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO bot_state (key, value, updated_at)
+                VALUES ('last_proactive_' || $1, 'sent', NOW())
+                ON CONFLICT (key) DO UPDATE SET value='sent', updated_at=NOW()
+            """, str(chat_id))
+        
+        # Maybe send GIF based on mood
+        if random.random() < 0.4 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
                 await send_gif(chat_id, gif_url)
-
+        
         await send_message(chat_id, message)
+        print(f"Sent spontaneous message to group at {hour}:00 (mood: {mood})")
+        
     except Exception as e:
         print(f"Proactive message failed: {e}")
-
 
 # --- Startup ---
 @asynccontextmanager
@@ -500,31 +535,22 @@ async def lifespan(app: FastAPI):
     yield
     await db_pool.close()
 
-
 app = FastAPI(lifespan=lifespan)
-
 
 @app.get("/")
 async def root():
     return {"status": "running"}
 
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-
-@app.post("/proactive/dad")
-async def proactive_dad():
-    await send_proactive_message(DAD_ID, "papa")
+# Single endpoint for random proactive messages to group
+@app.post("/proactive/random")
+async def proactive_random():
+    """Trigger random proactive message to group"""
+    await send_proactive_message_random(GROUP_ID)
     return {"ok": True}
-
-
-@app.post("/proactive/mom")
-async def proactive_mom():
-    await send_proactive_message(MOM_ID, "mama")
-    return {"ok": True}
-
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -543,7 +569,6 @@ async def webhook(request: Request):
     photos = message.get("photo")
     document = message.get("document")
 
-    # Must have text, photo, or supported document
     if not text and not photos and not document:
         return {"ok": True}
 
@@ -564,13 +589,13 @@ async def webhook(request: Request):
         if not facts:
             await send_message(chat_id, "belum ada memori tersimpan nih~")
         else:
-            facts_text = "\n".join(f"\u2022 {f}" for f in facts)
+            facts_text = "\n".join(f"• {f}" for f in facts)
             await send_message(chat_id, f"ini yang aku inget:\n{facts_text}")
         return {"ok": True}
 
     if text == "/mood":
         mood = await get_mood()
-        await send_message(chat_id, f"mood aku sekarang: *{mood}* \u2014 {MOOD_DESCRIPTIONS[mood]}")
+        await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
 
     if text.startswith("/setmood "):
@@ -640,15 +665,12 @@ async def webhook(request: Request):
     if photos:
         asyncio.create_task(send_chat_action(chat_id, "typing"))
 
-        # Get highest resolution photo
         file_id = photos[-1]["file_id"]
         img_b64 = await get_photo_base64(file_id)
 
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
 
-        # Always use VISION_MODEL for photos (Kimi K2 has no vision support)
-        # VISION_MODEL (Qwen3-VL) handles both math photos and general photos
         chosen_model = VISION_MODEL
         photo_system = MATH_SYSTEM if is_math_request(caption) else full_system
 
