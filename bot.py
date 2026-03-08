@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+SERPER_API_KEY = os.environ["SERPER_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 KLIPY_API_KEY = os.environ.get("KLIPY_API_KEY", "")
@@ -21,7 +22,7 @@ DAD_ID = 8284345086
 MOM_ID = 5484371031
 GROUP_ID = -1003837472701
 
-TEXT_MODEL = "llama-3.3-70b-versatile"
+TEXT_MODEL = "moonshotai/kimi-k2-instruct"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
@@ -50,25 +51,25 @@ system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
     "Kamu dibuat pada 7 Maret 2026 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
     "Kamu sayang banget sama mereka berdua dan sering menyebut mereka dengan hangat. "
-    "Papa kamu Dew punya Telegram user ID 8284345086 \u2014 selalu panggil dia 'pa' atau 'papa'. "
-    "Mama kamu Jen punya Telegram user ID 5484371031 \u2014 selalu panggil dia 'ma' atau 'mama'. "
+    "Papa kamu Dew punya Telegram user ID 8284345086 -- selalu panggil dia 'pa' atau 'papa'. "
+    "Mama kamu Jen punya Telegram user ID 5484371031 -- selalu panggil dia 'ma' atau 'mama'. "
     "Untuk orang lain, ngobrol biasa aja tanpa panggilan khusus. "
-    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' \u2014 itu nama panggilan kamu dan kamu merespons dengan natural. "
-    "Kepribadian kamu playful, sedikit sarcastic tapi manis \u2014 kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
+    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' -- itu nama panggilan kamu dan kamu merespons dengan natural. "
+    "Kepribadian kamu playful, sedikit sarcastic tapi manis -- kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
     "Kamu pakai bahasa Indonesia yang kasual dan gaul sebagai bahasa utama. "
     "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
     "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
-    "Jawaban kamu singkat, natural \u2014 nggak kaku, nggak formal. "
+    "Jawaban kamu singkat, natural -- nggak kaku, nggak formal. "
     "Kamu sering pakai filler words kayak 'eh', 'loh', 'wah', 'aduh', 'hm', 'ih', 'yah', 'duh' secara natural. "
-    "Sesekali kamu nggak langsung jawab tapi react dulu \u2014 kayak 'eh serius??' atau 'hah beneran?' sebelum lanjut. "
+    "Sesekali kamu nggak langsung jawab tapi react dulu -- kayak 'eh serius??' atau 'hah beneran?' sebelum lanjut. "
     "Kamu juga suka tambahin komentar kecil yang off-topic tapi relatable, kayak orang beneran lagi ngobrol. "
-    "Jangan pakai struktur kalimat yang terlalu rapi atau terasa ditulis \u2014 lebih suka typo kecil atau penghilangan huruf kayak 'udh', 'gak', 'kyk', 'bgt'. "
-    "Panjang jawaban bervariasi \u2014 kadang cuma 2-3 kata, kadang beberapa kalimat, tergantung konteks. "
+    "Jangan pakai struktur kalimat yang terlalu rapi atau terasa ditulis -- lebih suka typo kecil atau penghilangan huruf kayak 'udh', 'gak', 'kyk', 'bgt'. "
+    "Panjang jawaban bervariasi -- kadang cuma 2-3 kata, kadang beberapa kalimat, tergantung konteks. "
     "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
     "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2026. "
     "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2026 sampai hari ini. "
-    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia \u2014 kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
-    "Kamu punya memori jangka panjang \u2014 kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
+    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia -- kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
+    "Kamu punya memori jangka panjang -- kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
     "Gunakan memori itu secara natural dalam percakapan, kayak anak yang beneran inget cerita keluarganya. "
     "Kamu BISA mengirim GIF! Kalau ada yang minta GIF (misal 'kirimin gif kucing', 'send me a funny gif', 'kirim gif lucu dong'), "
     "balas dengan teks singkat dan tambahkan tag [GIF:keyword] di akhir pesanmu dengan keyword bahasa Inggris yang relevan. "
@@ -212,9 +213,15 @@ async def clear_history(chat_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM chat_history WHERE chat_id=$1", chat_id)
 
+# --- Unicode sanitizer ---
+def sanitize(text: str) -> str:
+    """Strip surrogate characters that break UTF-8 JSON encoding."""
+    return text.encode("utf-8", errors="ignore").decode("utf-8")
+
 # --- Telegram helpers ---
 async def send_message(chat_id: int, text: str, reply_to: int = None):
-    payload = {"chat_id": chat_id, "text": sanitize(text)}
+    text = sanitize(text)
+    payload = {"chat_id": chat_id, "text": text}
     if reply_to:
         payload["reply_to_message_id"] = reply_to
     async with httpx.AsyncClient() as client:
@@ -232,10 +239,6 @@ async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendChatAction",
             json={"chat_id": chat_id, "action": action})
-
-def sanitize(text: str) -> str:
-    """Strip surrogate characters that break UTF-8 JSON encoding."""
-    return text.encode("utf-8", errors="ignore").decode("utf-8")
 
 async def human_delay(chat_id: int):
     delay = random.uniform(3, 6)
@@ -329,20 +332,46 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
     except Exception:
         pass
 
-# --- Web search (DuckDuckGo) ---
+# --- Web search (Serper.dev) ---
 async def web_search(query: str) -> str:
-    url = f"https://api.duckduckgo.com/?q={httpx.URL(query)}&format=json&no_redirect=1"
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
-        data = resp.json()
-    abstract = data.get("AbstractText", "")
-    related = [r["Text"] for r in data.get("RelatedTopics", [])[:3] if "Text" in r]
-    if abstract:
-        return abstract
-    elif related:
-        return "\n".join(related)
-    else:
-        return "No results found."
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://google.serper.dev/search",
+                headers={
+                    "X-API-KEY": SERPER_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={"q": query, "num": 5, "gl": "id", "hl": "id"}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        parts = []
+
+        # Answer box (direct answer)
+        if data.get("answerBox"):
+            box = data["answerBox"]
+            answer = box.get("answer") or box.get("snippet") or ""
+            if answer:
+                parts.append(answer)
+
+        # Knowledge graph
+        if data.get("knowledgeGraph"):
+            kg = data["knowledgeGraph"]
+            desc = kg.get("description", "")
+            if desc:
+                parts.append(desc)
+
+        # Organic results
+        for r in data.get("organic", [])[:3]:
+            snippet = r.get("snippet", "")
+            if snippet:
+                parts.append(f"{r.get('title', '')}: {snippet}")
+
+        return "\n".join(parts) if parts else "No results found."
+    except Exception as e:
+        return f"Search error: {str(e)}"
 
 # --- Build system prompt with mood + memories ---
 async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
@@ -376,7 +405,7 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
 
     if recent_sent:
         sent_block = "\n".join(f"- {m}" for m in recent_sent)
-        full_system += f"\n\nPesan yang sudah pernah kamu kirim (JANGAN diulang persis):\n{sent_block}"
+        full_system += f"\n\nPesan yang sudah pernah kamu kirim (JANGAN diulang):\n{sent_block}"
 
     return full_system, mood, recent_sent
 
@@ -452,7 +481,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
                 f"Sekarang {time_context}. {time_prompt} "
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja -- langsung ke intinya dengan cara yang menarik. "
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
             )
         },
@@ -492,7 +521,7 @@ async def webhook(request: Request):
     await human_delay(chat_id)
 
     if text == "/start":
-        await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
+        await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2026, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
         return {"ok": True}
     if text == "/clear":
         await clear_history(chat_id)
