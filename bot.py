@@ -22,7 +22,7 @@ FIREWORKS_BASE = "https://api.fireworks.ai/inference/v1"
 DAD_ID = 8284345086
 MOM_ID = 5484371031
 
-TEXT_MODEL = "accounts/fireworks/models/kimi-k2-instruct"
+TEXT_MODEL = "accounts/fireworks/models/kimi-k2p5"
 MATH_MODEL = "accounts/fireworks/models/qwen3-235b-a22b"
 VISION_MODEL = "accounts/fireworks/models/qwen3-vl-235b-a22b-instruct"  # vision-capable for photos
 
