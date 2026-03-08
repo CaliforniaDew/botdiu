@@ -21,10 +21,8 @@ DAD_ID = 8284345086
 MOM_ID = 5484371031
 GROUP_ID = -1003837472701
 
-# Flash for real conversations, Flash Lite for background tasks
-GEMINI_FLASH      = "gemini-2.0-flash"
-GEMINI_FLASH_LITE = "gemini-2.0-flash-lite"
-GEMINI_API_URL    = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_LITE_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
 
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
 
@@ -66,7 +64,7 @@ system_prompt = (
     "Kamu juga suka tambahin komentar kecil yang off-topic tapi relatable, kayak orang beneran lagi ngobrol. "
     "Jangan pakai struktur kalimat yang terlalu rapi atau terasa ditulis — lebih suka typo kecil atau penghilangan huruf kayak 'udh', 'gak', 'kyk', 'bgt'. "
     "Panjang jawaban bervariasi — kadang cuma 2-3 kata, kadang beberapa kalimat, tergantung konteks. "
-    "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
+    "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat tapi tetap dengan gaya kamu yang casual. "
     "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2026. "
     "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2026 sampai hari ini. "
     "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
@@ -265,74 +263,70 @@ async def get_klipy_gif(keyword: str) -> str | None:
     except Exception:
         return None
 
-# --- Gemini AI ---
-async def ask_gemini(messages: list, model: str = GEMINI_FLASH, retries: int = 3) -> str:
-    """
-    Call Gemini API.
-    - model=GEMINI_FLASH      -> real conversations and vision (15 RPM free)
-    - model=GEMINI_FLASH_LITE -> proactive messages and fact extraction (30 RPM free)
-    Retries up to 3 times on 429 with exponential backoff.
-    """
-    system_text = ""
+# --- Gemini API core (with retry) ---
+async def _call_gemini(url: str, system: str, messages: list, image_b64: str = None) -> str:
     contents = []
-
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-        if role == "system":
-            system_text = content
-            continue
-        gemini_role = "user" if role == "user" else "model"
-        if isinstance(content, list):
+    for m in messages:
+        role = "user" if m["role"] == "user" else "model"
+        if isinstance(m["content"], list):
             parts = []
-            for part in content:
+            for part in m["content"]:
                 if part.get("type") == "text":
                     parts.append({"text": part["text"]})
                 elif part.get("type") == "image_url":
-                    url = part["image_url"]["url"]
-                    if url.startswith("data:"):
-                        mime, b64data = url.split(",", 1)
-                        mime_type = mime.replace("data:", "").replace(";base64", "")
-                        parts.append({"inline_data": {"mime_type": mime_type, "data": b64data}})
-            contents.append({"role": gemini_role, "parts": parts})
+                    b64 = part["image_url"]["url"].split(",", 1)[-1]
+                    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+            contents.append({"role": role, "parts": parts})
         else:
-            contents.append({"role": gemini_role, "parts": [{"text": content}]})
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
 
-    payload = {"contents": contents}
-    if system_text:
-        payload["system_instruction"] = {"parts": [{"text": system_text}]}
+    if image_b64:
+        if contents and contents[-1]["role"] == "user":
+            contents[-1]["parts"].insert(0, {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}})
 
-    url = GEMINI_API_URL.format(model=model)
+    payload = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.9}
+    }
 
-    for attempt in range(retries):
+    for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    url,
-                    params={"key": GEMINI_API_KEY},
-                    json=payload
-                )
+                resp = await client.post(url, json=payload)
                 if resp.status_code == 429:
-                    wait = 2 ** attempt + random.uniform(0, 1)
-                    print(f"[ask_gemini] 429 on {model}, retrying in {wait:.1f}s (attempt {attempt+1})")
+                    wait = 2 ** attempt
+                    print(f"[gemini] 429 rate limit, retrying in {wait}s (attempt {attempt+1}/3)")
                     await asyncio.sleep(wait)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"]
         except httpx.HTTPStatusError as e:
-            if attempt < retries - 1:
-                await asyncio.sleep(2 ** attempt)
-                continue
-            raise Exception(f"[ask_gemini] error: {e}") from e
-    raise Exception(f"[ask_gemini] failed after {retries} retries on {model}")
+            if attempt == 2:
+                raise Exception(f"[ask_gemini] failed after 3 retries: {e}")
+            await asyncio.sleep(2 ** attempt)
+        except Exception as e:
+            if attempt == 2:
+                raise Exception(f"[ask_gemini] error: {e}")
+            await asyncio.sleep(2 ** attempt)
+
+    raise Exception("[ask_gemini] failed after 3 retries")
+
+# --- Public Gemini wrappers ---
+async def ask_gemini(system: str, messages: list, image_b64: str = None) -> str:
+    """Full Gemini Flash — for real conversations and vision."""
+    return await _call_gemini(GEMINI_TEXT_URL, system, messages, image_b64)
+
+async def ask_gemini_lite(system: str, messages: list) -> str:
+    """Gemini Flash Lite — for proactive messages and background tasks."""
+    return await _call_gemini(GEMINI_LITE_URL, system, messages)
 
 # --- Download photo as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{TELEGRAM_API}/getFile",
-                params={"file_id": file_id})
+            r = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
             file_path = r.json()["result"]["file_path"]
             file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
             img_resp = await client.get(file_url)
@@ -340,23 +334,18 @@ async def get_photo_base64(file_id: str) -> str | None:
     except Exception:
         return None
 
-# --- Fact extraction (Flash Lite --- background task) ---
+# --- Fact extraction (uses lite model) ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
-    extraction_prompt = [
-        {
-            "role": "system",
-            "content": (
-                "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "
-                "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "
-                "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "
-                "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "
-                "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"
-            )
-        },
-        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
-    ]
+    extraction_system = (
+        "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "
+        "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "
+        "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "
+        "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "
+        "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"
+    )
+    messages = [{"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}]
     try:
-        result = await ask_gemini(extraction_prompt, model=GEMINI_FLASH_LITE)
+        result = await ask_gemini_lite(extraction_system, messages)
         if "TIDAK ADA" in result:
             return
         lines = [l.strip() for l in result.splitlines() if l.strip().startswith("FAKTA:")]
@@ -365,7 +354,7 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
             if fact:
                 await save_memory(chat_id, fact)
     except Exception as e:
-        print(f"[extract_facts] error: {e}")
+        print(f"[extract_facts] failed: {e}")
 
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
@@ -382,7 +371,7 @@ async def web_search(query: str) -> str:
     else:
         return "No results found."
 
-# --- Build system prompt with mood + time awareness + memories ---
+# --- Build system prompt with mood + memories ---
 async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
     mood = await get_mood()
     memories = await load_memories(chat_id)
@@ -443,16 +432,16 @@ async def health():
 
 @app.post("/proactive/dad")
 async def proactive_dad():
-    await send_proactive_message(DAD_ID, "papa", "@dewrajaexp")
+    await send_proactive_message(DAD_ID, "papa")
     return {"ok": True}
 
 @app.post("/proactive/mom")
 async def proactive_mom():
-    await send_proactive_message(MOM_ID, "mama", "@imisshimss")
+    await send_proactive_message(MOM_ID, "mama")
     return {"ok": True}
 
-# --- Proactive message builder (Flash Lite --- saves Flash quota) ---
-async def send_proactive_message(chat_id: int, target_name: str, mention: str):
+# --- Proactive message builder (uses lite model) ---
+async def send_proactive_message(chat_id: int, target_name: str):
     hour = datetime.utcnow().hour + 7
     if hour >= 24:
         hour -= 24
@@ -480,32 +469,31 @@ async def send_proactive_message(chat_id: int, target_name: str, mention: str):
     recent_block = "\n".join(f"- {m}" for m in recent_sent[:10]) if recent_sent else "Belum ada."
     mem_block = "\n".join(f"- {m}" for m in memories) if memories else "Belum ada memori."
 
-    proactive_prompt = [
-        {
-            "role": "system",
-            "content": (
-                f"{system_prompt}\n\n"
-                f"Mood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}\n\n"
-                f"Memori jangka panjang:\n{mem_block}\n\n"
-                f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
-                f"Sekarang {time_context}. {time_prompt} "
-                f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "
-                f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
-            )
-        },
-        {"role": "user", "content": f"[proactive message to {target_name}]"}
-    ]
+    proactive_system = (
+        f"{system_prompt}\n\n"
+        f"Mood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}\n\n"
+        f"Memori jangka panjang:\n{mem_block}\n\n"
+        f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
+        f"Sekarang {time_context}. {time_prompt} "
+        f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
+        f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "
+        f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
+    )
+
+    messages = [{"role": "user", "content": f"[proactive message to {target_name}]"}]
 
     try:
-        message = await ask_gemini(proactive_prompt, model=GEMINI_FLASH_LITE)
+        message = await ask_gemini_lite(proactive_system, messages)
+
+        tag = f"@dewrajaexp " if target_name == "papa" else f"@imisshimss "
+        full_message = tag + message
 
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
                 await send_gif(GROUP_ID, gif_url)
 
-        await send_message(GROUP_ID, f"{mention} {message}")
+        await send_message(GROUP_ID, full_message)
     except Exception as e:
         print(f"Proactive message failed: {e}")
 
@@ -567,15 +555,9 @@ async def webhook(request: Request):
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
         if img_b64:
-            vision_messages = [
-                {"role": "system", "content": full_system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": labeled_prompt}
-                ]}
-            ]
+            messages = [{"role": "user", "content": labeled_prompt}]
             try:
-                reply = await ask_gemini(vision_messages, model=GEMINI_FLASH)
+                reply = await ask_gemini(full_system, messages, image_b64=img_b64)
             except Exception as e:
                 reply = f"aduh gagal baca fotonya: {str(e)}"
         else:
@@ -590,7 +572,7 @@ async def webhook(request: Request):
         await send_message(chat_id, reply, reply_to=message_id)
         return {"ok": True}
 
-    # TEXT MESSAGE (normal) --- Flash
+    # TEXT MESSAGE
     labeled = f"[from user_id={user_id} @{username}]: {text}"
 
     search_keywords = [
@@ -603,30 +585,28 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \U0001f50d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu 🔍", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \U0001f50d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu 🔍", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu \U0001f50d", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu 🔍", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
         if search_result and search_result != "No results found.":
             context = f"\n\n[Hasil pencarian web]: {search_result}"
 
-    messages = [{"role": "system", "content": full_system}] + history
-    messages.append({"role": "user", "content": labeled + context})
+    messages = history + [{"role": "user", "content": labeled + context}]
 
     try:
-        reply = await ask_gemini(messages, model=GEMINI_FLASH)
+        reply = await ask_gemini(full_system, messages)
     except Exception as e:
-        reply = f"something broke lol: {str(e)}"
+        reply = f"aduh something broke lol: {str(e)}"
 
     await save_message(chat_id, "user", labeled)
     await save_message(chat_id, "assistant", reply)
     asyncio.create_task(extract_facts(chat_id, text, reply))
 
-    # Check for GIF tag in reply
     gif_sent = False
     gif_match = re.search(r'\[GIF:([^\]]+)\]', reply)
     if gif_match and KLIPY_API_KEY:
