@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 KLIPY_API_KEY = os.environ.get("KLIPY_API_KEY", "")
@@ -21,8 +21,8 @@ DAD_ID = 8284345086
 MOM_ID = 5484371031
 GROUP_ID = -1003837472701
 
-TEXT_MODEL = "llama-3.3-70b-versatile"
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
 
@@ -265,27 +265,57 @@ async def get_klipy_gif(keyword: str) -> str | None:
     except Exception:
         return None
 
-# --- Groq AI (text only) ---
-async def ask_groq(messages: list) -> str:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": TEXT_MODEL, "messages": messages, "max_tokens": 1024}
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+# --- Gemini AI ---
+def _convert_to_gemini(messages: list) -> tuple[str, list]:
+    """Convert OpenAI-style messages to Gemini format. Returns (system_instruction, contents)."""
+    system_instruction = ""
+    contents = []
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        if role == "system":
+            if isinstance(content, str):
+                system_instruction = content
+        elif role == "user":
+            if isinstance(content, str):
+                contents.append({"role": "user", "parts": [{"text": content}]})
+            elif isinstance(content, list):
+                parts = []
+                for part in content:
+                    if part["type"] == "text":
+                        parts.append({"text": part["text"]})
+                    elif part["type"] == "image_url":
+                        url = part["image_url"]["url"]
+                        if url.startswith("data:"):
+                            mime, b64data = url.split(",", 1)
+                            mime_type = mime.replace("data:", "").replace(";base64", "")
+                            parts.append({"inline_data": {"mime_type": mime_type, "data": b64data}})
+                contents.append({"role": "user", "parts": parts})
+        elif role == "assistant":
+            if isinstance(content, str):
+                contents.append({"role": "model", "parts": [{"text": content}]})
+    return system_instruction, contents
 
-# --- Groq AI (vision) ---
-async def ask_groq_vision(messages: list) -> str:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": VISION_MODEL, "messages": messages, "max_tokens": 1024}
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+async def ask_gemini(messages: list) -> str:
+    system_instruction, contents = _convert_to_gemini(messages)
+    payload = {
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": 1024}
+    }
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                json=payload
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        print(f"[ask_gemini] error: {e}")
+        raise
 
 # --- Download photo as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
@@ -302,21 +332,21 @@ async def get_photo_base64(file_id: str) -> str | None:
 
 # --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
-    extraction_prompt = [\
-        {\
-            "role": "system",\
-            "content": (\
-                "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "\
-                "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "\
-                "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "\
-                "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "\
-                "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"\
-            )\
-        },\
-        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}\
+    extraction_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "Kamu adalah sistem ekstraksi memori. Tugasmu: dari percakapan ini, "
+                "ekstrak fakta-fakta penting yang perlu diingat jangka panjang. "
+                "Contoh: nama orang, ulang tahun, preferensi, kebiasaan, kejadian penting, goals. "
+                "Jawab HANYA dengan daftar fakta singkat, satu per baris, format: 'FAKTA: ...' "
+                "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"
+            )
+        },
+        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
     ]
     try:
-        result = await ask_groq(extraction_prompt)
+        result = await ask_gemini(extraction_prompt)
         if "TIDAK ADA" in result:
             return
         lines = [l.strip() for l in result.splitlines() if l.strip().startswith("FAKTA:")]
@@ -440,25 +470,25 @@ async def send_proactive_message(chat_id: int, target_name: str):
     recent_block = "\n".join(f"- {m}" for m in recent_sent[:10]) if recent_sent else "Belum ada."
     mem_block = "\n".join(f"- {m}" for m in memories) if memories else "Belum ada memori."
 
-    proactive_prompt = [\
-        {\
-            "role": "system",\
-            "content": (\
-                f"{system_prompt}\n\n"\
-                f"Mood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}\n\n"\
-                f"Memori jangka panjang:\n{mem_block}\n\n"\
-                f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"\
-                f"Sekarang {time_context}. {time_prompt} "\
-                f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "\
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "\
-                f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."\
-            )\
-        },\
-        {"role": "user", "content": f"[proactive message to {target_name}]"}\
+    proactive_prompt = [
+        {
+            "role": "system",
+            "content": (
+                f"{system_prompt}\n\n"
+                f"Mood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}\n\n"
+                f"Memori jangka panjang:\n{mem_block}\n\n"
+                f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
+                f"Sekarang {time_context}. {time_prompt} "
+                f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "
+                f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
+            )
+        },
+        {"role": "user", "content": f"[proactive message to {target_name}]"}
     ]
 
     try:
-        message = await ask_groq(proactive_prompt)
+        message = await ask_gemini(proactive_prompt)
 
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
@@ -527,17 +557,18 @@ async def webhook(request: Request):
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
         if img_b64:
-            vision_messages = [\
-                {"role": "system", "content": full_system},\
-                {"role": "user", "content": [\
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},\
-                    {"type": "text", "text": labeled_prompt}\
-                ]}\
+            vision_messages = [
+                {"role": "system", "content": full_system},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    {"type": "text", "text": labeled_prompt}
+                ]}
             ]
             try:
-                reply = await ask_groq_vision(vision_messages)
+                reply = await ask_gemini(vision_messages)
             except Exception as e:
-                reply = f"aduh gagal baca fotonya: {str(e)}"
+                print(f"[vision] error: {e}")
+                reply = "aduh gagal baca fotonya, coba kirim lagi~"
         else:
             reply = "gagal download fotonya pa/ma, coba kirim lagi~"
         await save_message(chat_id, "user", labeled_prompt)
@@ -553,10 +584,10 @@ async def webhook(request: Request):
     # TEXT MESSAGE (normal)
     labeled = f"[from user_id={user_id} @{username}]: {text}"
 
-    search_keywords = [\
-        "search", "look up", "cari", "cariin", "carikan", "tolong cari",\
-        "siapa", "apa itu", "what is", "who is", "latest", "news", "current",\
-        "terbaru", "sekarang", "gimana", "berapa", "kapan", "dimana"\
+    search_keywords = [
+        "search", "look up", "cari", "cariin", "carikan", "tolong cari",
+        "siapa", "apa itu", "what is", "who is", "latest", "news", "current",
+        "terbaru", "sekarang", "gimana", "berapa", "kapan", "dimana"
     ]
     needs_search = any(kw in text.lower() for kw in search_keywords)
 
@@ -578,9 +609,10 @@ async def webhook(request: Request):
     messages.append({"role": "user", "content": labeled + context})
 
     try:
-        reply = await ask_groq(messages)
+        reply = await ask_gemini(messages)
     except Exception as e:
-        reply = f"something broke lol: {str(e)}"
+        print(f"[webhook] ask_gemini error: {e}")
+        reply = "aduh ada yang error bentar ya, coba lagi~"
 
     await save_message(chat_id, "user", labeled)
     await save_message(chat_id, "assistant", reply)
