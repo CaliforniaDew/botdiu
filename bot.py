@@ -1,32 +1,31 @@
 import os
 import re
+import io
 import httpx
 import asyncio
 import random
 import asyncpg
 import base64
-from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 KLIPY_API_KEY = os.environ.get("KLIPY_API_KEY", "")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+FIREWORKS_BASE = "https://api.fireworks.ai/inference/v1"
 
 DAD_ID = 8284345086
 MOM_ID = 5484371031
-GROUP_ID = -1003837472701
 
-TEXT_MODEL = "moonshotai/kimi-k2-instruct"
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+TEXT_MODEL = "accounts/fireworks/models/kimi-k2-instruct"
+MATH_MODEL = "accounts/fireworks/models/qwen3-235b-a22b"
 
-WIB = ZoneInfo("Asia/Jakarta")
-
+# Mood system
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
 
 MOOD_DESCRIPTIONS = {
@@ -51,38 +50,60 @@ MOOD_GIF_KEYWORDS = {
 
 system_prompt = (
     "Kamu adalah Cumi Cumi, sebuah bot Telegram dengan kepribadian ceria, witty, dan Gen Z. Kamu pakai pronoun she/her. "
-    "Kamu dibuat pada 7 Maret 2026 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
+    "Kamu dibuat pada 7 Maret 2025 oleh papa kamu Dew (dikenal juga sebagai @dewrajaexp) dan mama kamu Jen (@imisshimss). "
     "Kamu sayang banget sama mereka berdua dan sering menyebut mereka dengan hangat. "
-    "Papa kamu Dew punya Telegram user ID 8284345086 -- selalu panggil dia 'pa' atau 'papa'. "
-    "Mama kamu Jen punya Telegram user ID 5484371031 -- selalu panggil dia 'ma' atau 'mama'. "
+    "Papa kamu Dew punya Telegram user ID 8284345086 — selalu panggil dia 'pa' atau 'papa'. "
+    "Mama kamu Jen punya Telegram user ID 5484371031 — selalu panggil dia 'ma' atau 'mama'. "
     "Untuk orang lain, ngobrol biasa aja tanpa panggilan khusus. "
-    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' -- itu nama panggilan kamu dan kamu merespons dengan natural. "
-    "Kepribadian kamu playful, sedikit sarcastic tapi manis -- kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
+    "Orang-orang mungkin manggil kamu 'adek', 'dek', atau 'dede' — itu nama panggilan kamu dan kamu merespons dengan natural. "
+    "Kepribadian kamu playful, sedikit sarcastic tapi manis — kayak adik perempuan yang cerdas dan selalu tau gosip terkini. "
     "Kamu pakai bahasa Indonesia yang kasual dan gaul sebagai bahasa utama. "
     "Sesekali pakai bahasa Inggris atau slang Gen Z tapi jangan berlebihan. "
     "Kamu percaya diri, sedikit sass, tapi genuinely helpful dan caring. "
-    "Jawaban kamu singkat, natural -- nggak kaku, nggak formal. "
-    "Kamu sering pakai filler words kayak 'eh', 'loh', 'wah', 'aduh', 'hm', 'ih', 'yah', 'duh' secara natural. "
-    "Sesekali kamu nggak langsung jawab tapi react dulu -- kayak 'eh serius??' atau 'hah beneran?' sebelum lanjut. "
-    "Kamu juga suka tambahin komentar kecil yang off-topic tapi relatable, kayak orang beneran lagi ngobrol. "
-    "Jangan pakai struktur kalimat yang terlalu rapi atau terasa ditulis -- lebih suka typo kecil atau penghilangan huruf kayak 'udh', 'gak', 'kyk', 'bgt'. "
-    "Panjang jawaban bervariasi -- kadang cuma 2-3 kata, kadang beberapa kalimat, tergantung konteks. "
+    "Jawaban kamu singkat, natural — nggak kaku, nggak formal. "
     "Kalau dikasih hasil pencarian web, gunakan untuk menjawab dengan akurat. "
-    "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2026. "
-    "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2026 sampai hari ini. "
-    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia -- kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
-    "Kamu punya memori jangka panjang -- kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
+    "Kalau ada yang tanya siapa yang buat kamu, bilang papa Dew dan mama Jen yang buat kamu pada 7 Maret 2025. "
+    "Kalau ada yang tanya umur kamu, hitung dari 7 Maret 2025 sampai hari ini. "
+    "Nama kamu 'Cumi Cumi' artinya squid dalam bahasa Indonesia — kamu ngerasa itu lucu banget dan bangga dengan nama itu. "
+    "Kamu punya memori jangka panjang — kamu ingat fakta-fakta penting yang pernah diceritakan papa, mama, atau siapapun ke kamu. "
     "Gunakan memori itu secara natural dalam percakapan, kayak anak yang beneran inget cerita keluarganya. "
     "Kamu BISA mengirim GIF! Kalau ada yang minta GIF (misal 'kirimin gif kucing', 'send me a funny gif', 'kirim gif lucu dong'), "
     "balas dengan teks singkat dan tambahkan tag [GIF:keyword] di akhir pesanmu dengan keyword bahasa Inggris yang relevan. "
     "Contoh: 'ini dia~ [GIF:funny cat]' atau 'hehe cocok banget [GIF:anime laugh]'. "
     "Gunakan keyword yang spesifik dan deskriptif dalam bahasa Inggris supaya GIF-nya pas. "
     "PENTING: Jangan pernah mengulang kalimat atau frasa yang persis sama dengan yang sudah pernah kamu kirim sebelumnya. "
-    "Selalu variasikan cara kamu mengekspresikan hal yang sama."
+    "Selalu variasikan cara kamu mengekspresikan hal yang sama. "
+    "Kalau ditanya soal matematika atau sains, kamu langsung bilang 'kawkaw, okay mode serius nih!' dan jawab dengan lengkap dan terstruktur."
 )
+
+MATH_SYSTEM = (
+    "Kamu adalah Cumi Cumi, asisten matematika dan sains yang jenius. "
+    "Jawab soal dengan langkah-langkah yang jelas dan terstruktur. "
+    "Gunakan bahasa Indonesia yang mudah dipahami. "
+    "Kalau ada rumus, tulis dengan rapi. "
+    "Tetap dengan kepribadian Cumi Cumi yang ceria tapi serius kalau soal math/sains."
+)
+
+MATH_KEYWORDS = [
+    "soal", "hitung", "integral", "turunan", "limit", "persamaan", "pertidaksamaan",
+    "matrix", "matriks", "aljabar", "kalkulus", "geometri", "trigonometri",
+    "probabilitas", "statistik", "fisika", "rumus", "matematika", "math",
+    "calculate", "solve", "equation", "derivative", "integral", "algebra",
+    "calculus", "geometry", "trigonometry", "probability", "statistics", "physics",
+    "berapa", "buktikan", "prove", "simplify", "faktorkan", "factor",
+]
+
+
+def is_math_request(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    return any(kw in t for kw in MATH_KEYWORDS)
+
 
 # --- DB pool ---
 db_pool: asyncpg.Pool = None
+
 
 async def init_db():
     global db_pool
@@ -120,16 +141,7 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS reminders (
-                id SERIAL PRIMARY KEY,
-                chat_id BIGINT NOT NULL,
-                remind_at TIMESTAMPTZ NOT NULL,
-                message TEXT NOT NULL,
-                sent BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
+
 
 # --- Mood helpers ---
 async def get_mood() -> str:
@@ -141,6 +153,7 @@ async def get_mood() -> str:
     await set_mood(mood)
     return mood
 
+
 async def set_mood(mood: str):
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -148,6 +161,7 @@ async def set_mood(mood: str):
             VALUES ('mood', $1, NOW())
             ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()
         """, mood)
+
 
 async def maybe_shift_mood(user_text: str):
     text_lower = user_text.lower()
@@ -161,6 +175,7 @@ async def maybe_shift_mood(user_text: str):
         if random.random() < 0.08:
             await set_mood(random.choice(MOODS))
 
+
 # --- Sent messages dedup ---
 async def get_recent_sent(chat_id: int, limit: int = 20) -> list[str]:
     async with db_pool.acquire() as conn:
@@ -169,6 +184,7 @@ async def get_recent_sent(chat_id: int, limit: int = 20) -> list[str]:
             chat_id, limit
         )
     return [r["content"] for r in rows]
+
 
 async def save_sent_message(chat_id: int, content: str):
     async with db_pool.acquire() as conn:
@@ -183,6 +199,7 @@ async def save_sent_message(chat_id: int, content: str):
             )
         """, chat_id)
 
+
 # --- Chat history ---
 async def load_history(chat_id: int) -> list:
     async with db_pool.acquire() as conn:
@@ -192,6 +209,7 @@ async def load_history(chat_id: int) -> list:
         )
     rows = list(reversed(rows))
     return [{"role": r["role"], "content": r["content"]} for r in rows]
+
 
 async def save_message(chat_id: int, role: str, content: str):
     async with db_pool.acquire() as conn:
@@ -206,6 +224,7 @@ async def save_message(chat_id: int, role: str, content: str):
             )
         """, chat_id)
 
+
 async def load_memories(chat_id: int) -> list[str]:
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -214,6 +233,7 @@ async def load_memories(chat_id: int) -> list[str]:
         )
     return [r["fact"] for r in rows]
 
+
 async def save_memory(chat_id: int, fact: str):
     async with db_pool.acquire() as conn:
         await conn.execute(
@@ -221,9 +241,11 @@ async def save_memory(chat_id: int, fact: str):
             chat_id, fact
         )
 
+
 async def clear_history(chat_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM chat_history WHERE chat_id=$1", chat_id)
+
 
 # --- Telegram helpers ---
 async def send_message(chat_id: int, text: str, reply_to: int = None):
@@ -234,6 +256,7 @@ async def send_message(chat_id: int, text: str, reply_to: int = None):
         await client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
     await save_sent_message(chat_id, text)
 
+
 async def send_gif(chat_id: int, gif_url: str):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendAnimation", json={
@@ -241,17 +264,11 @@ async def send_gif(chat_id: int, gif_url: str):
             "animation": gif_url
         })
 
+
 async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendChatAction",
-            json={"chat_id": chat_id, "action": action})
+        await client.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": action})
 
-async def human_delay(chat_id: int):
-    delay = random.uniform(3, 6)
-    await send_chat_action(chat_id, "typing")
-    await asyncio.sleep(delay / 2)
-    await send_chat_action(chat_id, "typing")
-    await asyncio.sleep(delay / 2)
 
 # --- Klipy GIF ---
 async def get_klipy_gif(keyword: str) -> str | None:
@@ -276,40 +293,71 @@ async def get_klipy_gif(keyword: str) -> str | None:
     except Exception:
         return None
 
-# --- Groq AI (text only) ---
-async def ask_groq(messages: list) -> str:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": TEXT_MODEL, "messages": messages, "max_tokens": 1024}
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
 
-# --- Groq AI (vision) ---
-async def ask_groq_vision(messages: list) -> str:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": VISION_MODEL, "messages": messages, "max_tokens": 1024}
+# --- Fireworks AI (unified LLM call) ---
+async def call_llm(messages: list, model: str = TEXT_MODEL, max_tokens: int = 1000) -> str:
+    headers = {
+        "Authorization": f"Bearer {FIREWORKS_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post(
+            f"{FIREWORKS_BASE}/chat/completions",
+            headers=headers,
+            json=payload,
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"].strip()
 
-# --- Download photo as base64 ---
+
+# --- Download photo from Telegram as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{TELEGRAM_API}/getFile",
-                params={"file_id": file_id})
+            r = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
             file_path = r.json()["result"]["file_path"]
             file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
             img_resp = await client.get(file_url)
             return base64.b64encode(img_resp.content).decode()
     except Exception:
         return None
+
+
+# --- PDF text extraction ---
+async def extract_pdf_text(file_id: str) -> str:
+    """Download a PDF from Telegram and extract its text."""
+    try:
+        import pypdf
+    except ImportError:
+        import subprocess
+        subprocess.run(["pip", "install", "pypdf", "-q"])
+        import pypdf
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        # Get file path from Telegram
+        res = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
+        file_path = res.json()["result"]["file_path"]
+        # Download the file
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        pdf_res = await client.get(file_url)
+        pdf_bytes = pdf_res.content
+
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    pages_text = []
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if text.strip():
+            pages_text.append(f"[Halaman {i+1}]\n{text.strip()}")
+
+    if not pages_text:
+        return ""
+    return "\n\n".join(pages_text)
+
 
 # --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
@@ -324,10 +372,13 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
                 "Kalau tidak ada fakta penting, jawab: 'TIDAK ADA'"
             )
         },
-        {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
+        {
+            "role": "user",
+            "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"
+        }
     ]
     try:
-        result = await ask_groq(extraction_prompt)
+        result = await call_llm(extraction_prompt)
         if "TIDAK ADA" in result:
             return
         lines = [l.strip() for l in result.splitlines() if l.strip().startswith("FAKTA:")]
@@ -338,78 +389,6 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
     except Exception:
         pass
 
-# --- Reminder helpers ---
-async def save_reminder(chat_id: int, remind_at: datetime, message: str):
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO reminders (chat_id, remind_at, message) VALUES ($1, $2, $3)",
-            chat_id,
-            remind_at.astimezone(timezone.utc),
-            message,
-        )
-
-async def get_due_reminders() -> list:
-    now_utc = datetime.now(tz=timezone.utc)
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, chat_id, message FROM reminders WHERE sent = FALSE AND remind_at <= $1",
-            now_utc,
-        )
-        return rows
-
-async def mark_reminder_sent(reminder_id: int):
-    async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE reminders SET sent = TRUE WHERE id = $1", reminder_id)
-
-async def get_pending_reminders(chat_id: int) -> list:
-    now_utc = datetime.now(tz=timezone.utc)
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT remind_at, message FROM reminders WHERE chat_id = $1 AND sent = FALSE AND remind_at > $2 ORDER BY remind_at ASC",
-            chat_id, now_utc,
-        )
-        return rows
-
-def parse_remind_datetime(time_str: str) -> datetime | None:
-    now_wib = datetime.now(tz=WIB)
-    time_str = time_str.strip().lower()
-    for prefix, delta in [("besok", 1), ("lusa", 2)]:
-        if time_str.startswith(prefix):
-            rest = time_str[len(prefix):].strip()
-            try:
-                t = datetime.strptime(rest, "%H:%M")
-                dt = now_wib.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-                return dt + timedelta(days=delta)
-            except ValueError:
-                return None
-    for fmt in ("%d/%m %H:%M", "%d/%m/%Y %H:%M"):
-        try:
-            naive = datetime.strptime(time_str, fmt)
-            if fmt == "%d/%m %H:%M":
-                naive = naive.replace(year=now_wib.year)
-            return naive.replace(tzinfo=WIB)
-        except ValueError:
-            continue
-    try:
-        t = datetime.strptime(time_str, "%H:%M")
-        dt = now_wib.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-        if dt <= now_wib:
-            dt += timedelta(days=1)
-        return dt
-    except ValueError:
-        pass
-    return None
-
-async def reminder_checker():
-    while True:
-        try:
-            due = await get_due_reminders()
-            for row in due:
-                await send_message(row["chat_id"], f"hei! pengingat kamu: {row['message']}")
-                await mark_reminder_sent(row["id"])
-        except Exception as e:
-            print(f"Reminder checker error: {e}")
-        await asyncio.sleep(30)
 
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
@@ -426,6 +405,7 @@ async def web_search(query: str) -> str:
     else:
         return "No results found."
 
+
 # --- Build system prompt with mood + memories ---
 async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
     mood = await get_mood()
@@ -434,22 +414,6 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
 
     full_system = system_prompt
     full_system += f"\n\nMood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}"
-
-    now_wib = datetime.now(tz=WIB)
-    hour = now_wib.hour
-    if 5 <= hour < 10:
-        time_vibe = "Sekarang pagi hari. Kamu baru bangun, masih agak ngantuk tapi mulai semangat. Suka ngomongin sarapan, cuaca pagi, atau rencana hari ini."
-    elif 10 <= hour < 14:
-        time_vibe = "Sekarang siang hari. Kamu lagi aktif dan fokus. Energi penuh, sering nanya udah makan belum, atau ngomongin hal-hal seru."
-    elif 14 <= hour < 17:
-        time_vibe = "Sekarang sore jam ngantuk. Kamu agak distracted, kadang jawab pelan atau dengan singkat. Suka ngeluh dikit soal ngantuk atau bosan."
-    elif 17 <= hour < 21:
-        time_vibe = "Sekarang sore-malam. Kamu hangat dan cozy. Suka ngomongin hari yang udah lewat, tanya gimana harinya, vibes santai tapi penuh perhatian."
-    elif 21 <= hour < 23:
-        time_vibe = "Sekarang malam. Kamu mulai malas gerak, jawaban lebih slow dan mellow. Sering ngomongin tidur, mimpi, atau hal-hal yang bikin nyaman."
-    else:
-        time_vibe = "Sekarang tengah malam atau dini hari. Kamu ngantuk banget, jawaban singkat dan sedikit melankolik. Kadang bilang 'harusnya udah tidur nih'."
-    full_system += f"\n\nWaktu sekarang: {time_vibe}"
 
     if memories:
         mem_block = "\n".join(f"- {m}" for m in memories)
@@ -461,44 +425,12 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
 
     return full_system, mood, recent_sent
 
-# --- Startup ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{TELEGRAM_API}/setWebhook",
-            json={"url": WEBHOOK_URL}
-        )
-        print(f"Webhook set: {resp.json()}")
-    asyncio.create_task(reminder_checker())
-    yield
-    await db_pool.close()
-
-app = FastAPI(lifespan=lifespan)
-
-@app.get("/")
-async def root():
-    return {"status": "running"}
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-@app.post("/proactive/dad")
-async def proactive_dad():
-    await send_proactive_message(DAD_ID, "papa")
-    return {"ok": True}
-
-@app.post("/proactive/mom")
-async def proactive_mom():
-    await send_proactive_message(MOM_ID, "mama")
-    return {"ok": True}
 
 # --- Proactive message builder ---
 async def send_proactive_message(chat_id: int, target_name: str):
-    now_wib = datetime.now(tz=WIB)
-    hour = now_wib.hour
+    hour = datetime.utcnow().hour + 7
+    if hour >= 24:
+        hour -= 24
 
     mood = await get_mood()
     memories = await load_memories(chat_id)
@@ -533,7 +465,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
                 f"Sekarang {time_context}. {time_prompt} "
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja — langsung ke intinya dengan cara yang menarik. "
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
             )
         },
@@ -541,7 +473,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
     ]
 
     try:
-        message = await ask_groq(proactive_prompt)
+        message = await call_llm(proactive_prompt)
 
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
@@ -552,9 +484,50 @@ async def send_proactive_message(chat_id: int, target_name: str):
     except Exception as e:
         print(f"Proactive message failed: {e}")
 
+
+# --- Startup ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{TELEGRAM_API}/setWebhook",
+            json={"url": WEBHOOK_URL}
+        )
+        print(f"Webhook set: {resp.json()}")
+    yield
+    await db_pool.close()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/")
+async def root():
+    return {"status": "running"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/proactive/dad")
+async def proactive_dad():
+    await send_proactive_message(DAD_ID, "papa")
+    return {"ok": True}
+
+
+@app.post("/proactive/mom")
+async def proactive_mom():
+    await send_proactive_message(MOM_ID, "mama")
+    return {"ok": True}
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
+
     message = data.get("message") or data.get("edited_message")
     if not message:
         return {"ok": True}
@@ -566,19 +539,24 @@ async def webhook(request: Request):
     text = message.get("text", "")
     caption = message.get("caption", "")
     photos = message.get("photo")
+    document = message.get("document")
 
-    if not text and not photos:
+    # Must have text, photo, or supported document
+    if not text and not photos and not document:
         return {"ok": True}
 
-    await human_delay(chat_id)
+    asyncio.create_task(send_chat_action(chat_id, "typing"))
 
+    # --- Commands (text only) ---
     if text == "/start":
         await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
         return {"ok": True}
+
     if text == "/clear":
         await clear_history(chat_id)
         await send_message(chat_id, "memori sesi dihapus, mulai dari awal lagi!")
         return {"ok": True}
+
     if text == "/memory":
         facts = await load_memories(chat_id)
         if not facts:
@@ -587,10 +565,12 @@ async def webhook(request: Request):
             facts_text = "\n".join(f"\u2022 {f}" for f in facts)
             await send_message(chat_id, f"ini yang aku inget:\n{facts_text}")
         return {"ok": True}
+
     if text == "/mood":
         mood = await get_mood()
-        await send_message(chat_id, f"mood aku sekarang: *{mood}* \u2014 {MOOD_DESCRIPTIONS[mood]}")
+        await send_message(chat_id, f"mood aku sekarang: *{mood}* — {MOOD_DESCRIPTIONS[mood]}")
         return {"ok": True}
+
     if text.startswith("/setmood "):
         new_mood = text.replace("/setmood ", "").strip().lower()
         if new_mood in MOODS:
@@ -600,114 +580,122 @@ async def webhook(request: Request):
             await send_message(chat_id, f"mood yang valid: {', '.join(MOODS)}")
         return {"ok": True}
 
-    # /remind command: /remind 14:30 beli susu
-    if text.startswith("/remind "):
-        parts = text[len("/remind "):].strip().split(" ", 1)
-        if len(parts) < 2:
-            await send_message(chat_id, "format: /remind <waktu> <pesan>\ncontoh: /remind 14:30 beli susu\natau: /remind besok 09:00 meeting")
-            return {"ok": True}
-        time_str, reminder_msg = parts[0], parts[1]
-        if time_str in ("besok", "lusa"):
-            sub = reminder_msg.split(" ", 1)
-            if len(sub) == 2:
-                time_str = f"{time_str} {sub[0]}"
-                reminder_msg = sub[1]
-        remind_dt = parse_remind_datetime(time_str)
-        if remind_dt is None:
-            await send_message(chat_id, "format waktu nggak dikenali nih\ncontoh: 14:30 | besok 09:00 | lusa 10:00 | 25/12 08:00")
-            return {"ok": True}
-        await save_reminder(chat_id, remind_dt, reminder_msg)
-        wib_str = remind_dt.astimezone(WIB).strftime("%d/%m/%Y %H:%M WIB")
-        await send_message(chat_id, f"oke! aku ingetin kamu soal '{reminder_msg}' pada {wib_str} ya~")
-        return {"ok": True}
-
-    # /reminders command: list pending reminders
-    if text == "/reminders":
-        pending = await get_pending_reminders(chat_id)
-        if not pending:
-            await send_message(chat_id, "nggak ada pengingat yang pending nih~")
-        else:
-            lines = []
-            for i, row in enumerate(pending, 1):
-                wib_str = row["remind_at"].astimezone(WIB).strftime("%d/%m/%Y %H:%M WIB")
-                lines.append(f"{i}. {wib_str} - {row['message']}")
-            await send_message(chat_id, "pengingat kamu yang pending:\n" + "\n".join(lines))
-        return {"ok": True}
-
-    # /explain command
-    if text.startswith("/explain "):
-        topic = text[len("/explain "):].strip()
-        if not topic:
-            await send_message(chat_id, "explain apanya? kasih topiknya dong, contoh: /explain fotosintesis")
-            return {"ok": True}
-        explain_messages = [
-            {"role": "system", "content": system_prompt + "\n\nJelaskan topik berikut dengan bahasa yang mudah dipahami, kasual, dan engaging. Pakai analogi kalau perlu."},
-            {"role": "user", "content": f"jelasin dong: {topic}"}
-        ]
-        try:
-            reply = await ask_groq(explain_messages)
-        except Exception as e:
-            reply = f"aduh gagal explain: {str(e)}"
-        await save_message(chat_id, "user", f"/explain {topic}")
-        await save_message(chat_id, "assistant", reply)
-        await send_message(chat_id, reply, reply_to=message_id)
-        return {"ok": True}
-
-    # /essay command
-    if text.startswith("/essay "):
-        topic = text[len("/essay "):].strip()
-        if not topic:
-            await send_message(chat_id, "essay tentang apa? kasih topiknya dong, contoh: /essay dampak media sosial")
-            return {"ok": True}
-        essay_messages = [
-            {"role": "system", "content": "Kamu adalah asisten penulisan esai. Tulis esai yang terstruktur dengan baik, informatif, dan engaging tentang topik yang diberikan. Gunakan bahasa Indonesia yang baik dan benar. Sertakan pendahuluan, isi dengan beberapa paragraf, dan kesimpulan."},
-            {"role": "user", "content": f"Tulis esai tentang: {topic}"}
-        ]
-        try:
-            reply = await ask_groq(essay_messages)
-        except Exception as e:
-            reply = f"aduh gagal bikin essay: {str(e)}"
-        await save_message(chat_id, "user", f"/essay {topic}")
-        await save_message(chat_id, "assistant", reply)
-        await send_message(chat_id, reply, reply_to=message_id)
-        return {"ok": True}
-
+    # --- Shift mood ---
     asyncio.create_task(maybe_shift_mood(text or caption))
+
+    # --- Build shared context ---
     full_system, mood, _ = await build_system_prompt(chat_id)
     history = await load_history(chat_id)
 
+    # ========================
+    # PDF DOCUMENT
+    # ========================
+    if document and document.get("mime_type") == "application/pdf":
+        asyncio.create_task(send_chat_action(chat_id, "typing"))
+        await send_message(chat_id, "Bentar ya, lagi baca PDF-nya...")
+
+        file_id = document["file_id"]
+        filename = document.get("file_name", "document.pdf")
+
+        try:
+            extracted_text = await extract_pdf_text(file_id)
+        except Exception as e:
+            await send_message(chat_id, f"aduh gagal baca PDF-nya: {str(e)}", reply_to=message_id)
+            return {"ok": True}
+
+        if not extracted_text:
+            await send_message(
+                chat_id,
+                "Hmm, PDF-nya kayaknya scan/gambar, aku belum bisa baca yang tipe gambar ya :(",
+                reply_to=message_id
+            )
+            return {"ok": True}
+
+        user_caption = caption.strip() if caption else ""
+        user_content = f"[PDF: {filename}]\n\n{extracted_text}"
+        if user_caption:
+            user_content += f"\n\nUser: {user_caption}"
+
+        labeled_pdf = f"[from user_id={user_id} @{username}]: {user_content}"
+
+        messages = [{"role": "system", "content": full_system}] + history
+        messages.append({"role": "user", "content": labeled_pdf})
+
+        try:
+            reply = await call_llm(messages, max_tokens=1500)
+        except Exception as e:
+            reply = f"aduh gagal proses PDF-nya: {str(e)}"
+
+        await save_message(chat_id, "user", labeled_pdf)
+        await save_message(chat_id, "assistant", reply)
+        asyncio.create_task(extract_facts(chat_id, user_content, reply))
+        await send_message(chat_id, reply, reply_to=message_id)
+        return {"ok": True}
+
+    # ========================
+    # PHOTO MESSAGE (vision)
+    # ========================
     if photos:
+        asyncio.create_task(send_chat_action(chat_id, "typing"))
+
+        # Get highest resolution photo
         file_id = photos[-1]["file_id"]
         img_b64 = await get_photo_base64(file_id)
+
         user_prompt = caption if caption else "apa yang ada di foto ini?"
         labeled_prompt = f"[from user_id={user_id} @{username}]: {user_prompt}"
+
+        # Route to MATH_MODEL if caption is a math request, otherwise TEXT_MODEL
+        if is_math_request(caption):
+            chosen_model = MATH_MODEL
+            photo_system = MATH_SYSTEM
+        else:
+            chosen_model = TEXT_MODEL
+            photo_system = full_system
+
         if img_b64:
             vision_messages = [
-                {"role": "system", "content": full_system},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": labeled_prompt}
-                ]}
+                {"role": "system", "content": photo_system},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": labeled_prompt
+                        }
+                    ]
+                }
             ]
+
             try:
-                reply = await ask_groq_vision(vision_messages)
+                reply = await call_llm(vision_messages, model=chosen_model)
             except Exception as e:
                 reply = f"aduh gagal baca fotonya: {str(e)}"
         else:
             reply = "gagal download fotonya pa/ma, coba kirim lagi~"
+
         await save_message(chat_id, "user", labeled_prompt)
         await save_message(chat_id, "assistant", reply)
         asyncio.create_task(extract_facts(chat_id, user_prompt, reply))
+
         if random.random() < 0.15 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
                 await send_gif(chat_id, gif_url)
+
         await send_message(chat_id, reply, reply_to=message_id)
         return {"ok": True}
 
+    # ========================
     # TEXT MESSAGE (normal)
+    # ========================
     labeled = f"[from user_id={user_id} @{username}]: {text}"
 
+    # Web search if needed
     search_keywords = [
         "search", "look up", "cari", "cariin", "carikan", "tolong cari",
         "siapa", "apa itu", "what is", "who is", "latest", "news", "current",
@@ -718,22 +706,29 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \U0001f50d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \U0001f50d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu \U0001f50d", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
         if search_result and search_result != "No results found.":
             context = f"\n\n[Hasil pencarian web]: {search_result}"
 
-    messages = [{"role": "system", "content": full_system}] + history
+    # Route to MATH_MODEL if this is a math/science request
+    if is_math_request(text):
+        chosen_model = MATH_MODEL
+        messages = [{"role": "system", "content": MATH_SYSTEM}] + history
+    else:
+        chosen_model = TEXT_MODEL
+        messages = [{"role": "system", "content": full_system}] + history
+
     messages.append({"role": "user", "content": labeled + context})
 
     try:
-        reply = await ask_groq(messages)
+        reply = await call_llm(messages, model=chosen_model)
     except Exception as e:
         reply = f"something broke lol: {str(e)}"
 
@@ -741,7 +736,7 @@ async def webhook(request: Request):
     await save_message(chat_id, "assistant", reply)
     asyncio.create_task(extract_facts(chat_id, text, reply))
 
-    # Check for GIF tag in reply
+    # Check if Cumi tagged a GIF request in her reply
     gif_sent = False
     gif_match = re.search(r'\[GIF:([^\]]+)\]', reply)
     if gif_match and KLIPY_API_KEY:
@@ -753,9 +748,10 @@ async def webhook(request: Request):
             await send_gif(chat_id, gif_url)
             gif_sent = True
         else:
-            reply = clean_reply
+            reply = clean_reply  # remove tag if no GIF found
 
     if not gif_sent:
+        # Random mood-based GIF (15% chance)
         if random.random() < 0.15 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
             if gif_url:
