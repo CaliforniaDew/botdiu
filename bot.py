@@ -5,7 +5,8 @@ import asyncio
 import random
 import asyncpg
 import base64
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
@@ -21,8 +22,10 @@ DAD_ID = 8284345086
 MOM_ID = 5484371031
 GROUP_ID = -1003837472701
 
-TEXT_MODEL = "llama-3.3-70b-versatile"
+TEXT_MODEL = "moonshotai/kimi-k2-instruct"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
 
@@ -115,6 +118,16 @@ async def init_db():
                 chat_id BIGINT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                remind_at TIMESTAMPTZ NOT NULL,
+                message TEXT NOT NULL,
+                sent BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
 
@@ -325,6 +338,79 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
     except Exception:
         pass
 
+# --- Reminder helpers ---
+async def save_reminder(chat_id: int, remind_at: datetime, message: str):
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO reminders (chat_id, remind_at, message) VALUES ($1, $2, $3)",
+            chat_id,
+            remind_at.astimezone(timezone.utc),
+            message,
+        )
+
+async def get_due_reminders() -> list:
+    now_utc = datetime.now(tz=timezone.utc)
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, chat_id, message FROM reminders WHERE sent = FALSE AND remind_at <= $1",
+            now_utc,
+        )
+        return rows
+
+async def mark_reminder_sent(reminder_id: int):
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE reminders SET sent = TRUE WHERE id = $1", reminder_id)
+
+async def get_pending_reminders(chat_id: int) -> list:
+    now_utc = datetime.now(tz=timezone.utc)
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT remind_at, message FROM reminders WHERE chat_id = $1 AND sent = FALSE AND remind_at > $2 ORDER BY remind_at ASC",
+            chat_id, now_utc,
+        )
+        return rows
+
+def parse_remind_datetime(time_str: str) -> datetime | None:
+    now_wib = datetime.now(tz=WIB)
+    time_str = time_str.strip().lower()
+    for prefix, delta in [("besok", 1), ("lusa", 2)]:
+        if time_str.startswith(prefix):
+            rest = time_str[len(prefix):].strip()
+            try:
+                t = datetime.strptime(rest, "%H:%M")
+                dt = now_wib.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+                return dt + timedelta(days=delta)
+            except ValueError:
+                return None
+    for fmt in ("%d/%m %H:%M", "%d/%m/%Y %H:%M"):
+        try:
+            naive = datetime.strptime(time_str, fmt)
+            if fmt == "%d/%m %H:%M":
+                naive = naive.replace(year=now_wib.year)
+            return naive.replace(tzinfo=WIB)
+        except ValueError:
+            continue
+    try:
+        t = datetime.strptime(time_str, "%H:%M")
+        dt = now_wib.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        if dt <= now_wib:
+            dt += timedelta(days=1)
+        return dt
+    except ValueError:
+        pass
+    return None
+
+async def reminder_checker():
+    while True:
+        try:
+            due = await get_due_reminders()
+            for row in due:
+                await send_message(row["chat_id"], f"hei! pengingat kamu: {row['message']}")
+                await mark_reminder_sent(row["id"])
+        except Exception as e:
+            print(f"Reminder checker error: {e}")
+        await asyncio.sleep(30)
+
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
     url = f"https://api.duckduckgo.com/?q={httpx.URL(query)}&format=json&no_redirect=1"
@@ -349,9 +435,8 @@ async def build_system_prompt(chat_id: int) -> tuple[str, str, list[str]]:
     full_system = system_prompt
     full_system += f"\n\nMood kamu saat ini: {mood}. {MOOD_DESCRIPTIONS[mood]}"
 
-    hour = datetime.utcnow().hour + 7
-    if hour >= 24:
-        hour -= 24
+    now_wib = datetime.now(tz=WIB)
+    hour = now_wib.hour
     if 5 <= hour < 10:
         time_vibe = "Sekarang pagi hari. Kamu baru bangun, masih agak ngantuk tapi mulai semangat. Suka ngomongin sarapan, cuaca pagi, atau rencana hari ini."
     elif 10 <= hour < 14:
@@ -386,6 +471,7 @@ async def lifespan(app: FastAPI):
             json={"url": WEBHOOK_URL}
         )
         print(f"Webhook set: {resp.json()}")
+    asyncio.create_task(reminder_checker())
     yield
     await db_pool.close()
 
@@ -411,9 +497,8 @@ async def proactive_mom():
 
 # --- Proactive message builder ---
 async def send_proactive_message(chat_id: int, target_name: str):
-    hour = datetime.utcnow().hour + 7
-    if hour >= 24:
-        hour -= 24
+    now_wib = datetime.now(tz=WIB)
+    hour = now_wib.hour
 
     mood = await get_mood()
     memories = await load_memories(chat_id)
@@ -448,7 +533,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
                 f"Pesan yang sudah pernah kamu kirim (JANGAN diulang):\n{recent_block}\n\n"
                 f"Sekarang {time_context}. {time_prompt} "
                 f"Pesan harus terasa natural, spontan, dan sesuai mood kamu. "
-                f"Jangan mulai dengan 'Halo' atau 'Hai' saja -- langsung ke intinya dengan cara yang menarik. "
+                f"Jangan mulai dengan 'Halo' atau 'Hai' saja \u2014 langsung ke intinya dengan cara yang menarik. "
                 f"PENTING: Jangan mengulang pesan yang ada di daftar di atas."
             )
         },
@@ -515,6 +600,78 @@ async def webhook(request: Request):
             await send_message(chat_id, f"mood yang valid: {', '.join(MOODS)}")
         return {"ok": True}
 
+    # /remind command: /remind 14:30 beli susu
+    if text.startswith("/remind "):
+        parts = text[len("/remind "):].strip().split(" ", 1)
+        if len(parts) < 2:
+            await send_message(chat_id, "format: /remind <waktu> <pesan>\ncontoh: /remind 14:30 beli susu\natau: /remind besok 09:00 meeting")
+            return {"ok": True}
+        time_str, reminder_msg = parts[0], parts[1]
+        if time_str in ("besok", "lusa"):
+            sub = reminder_msg.split(" ", 1)
+            if len(sub) == 2:
+                time_str = f"{time_str} {sub[0]}"
+                reminder_msg = sub[1]
+        remind_dt = parse_remind_datetime(time_str)
+        if remind_dt is None:
+            await send_message(chat_id, "format waktu nggak dikenali nih\ncontoh: 14:30 | besok 09:00 | lusa 10:00 | 25/12 08:00")
+            return {"ok": True}
+        await save_reminder(chat_id, remind_dt, reminder_msg)
+        wib_str = remind_dt.astimezone(WIB).strftime("%d/%m/%Y %H:%M WIB")
+        await send_message(chat_id, f"oke! aku ingetin kamu soal '{reminder_msg}' pada {wib_str} ya~")
+        return {"ok": True}
+
+    # /reminders command: list pending reminders
+    if text == "/reminders":
+        pending = await get_pending_reminders(chat_id)
+        if not pending:
+            await send_message(chat_id, "nggak ada pengingat yang pending nih~")
+        else:
+            lines = []
+            for i, row in enumerate(pending, 1):
+                wib_str = row["remind_at"].astimezone(WIB).strftime("%d/%m/%Y %H:%M WIB")
+                lines.append(f"{i}. {wib_str} - {row['message']}")
+            await send_message(chat_id, "pengingat kamu yang pending:\n" + "\n".join(lines))
+        return {"ok": True}
+
+    # /explain command
+    if text.startswith("/explain "):
+        topic = text[len("/explain "):].strip()
+        if not topic:
+            await send_message(chat_id, "explain apanya? kasih topiknya dong, contoh: /explain fotosintesis")
+            return {"ok": True}
+        explain_messages = [
+            {"role": "system", "content": system_prompt + "\n\nJelaskan topik berikut dengan bahasa yang mudah dipahami, kasual, dan engaging. Pakai analogi kalau perlu."},
+            {"role": "user", "content": f"jelasin dong: {topic}"}
+        ]
+        try:
+            reply = await ask_groq(explain_messages)
+        except Exception as e:
+            reply = f"aduh gagal explain: {str(e)}"
+        await save_message(chat_id, "user", f"/explain {topic}")
+        await save_message(chat_id, "assistant", reply)
+        await send_message(chat_id, reply, reply_to=message_id)
+        return {"ok": True}
+
+    # /essay command
+    if text.startswith("/essay "):
+        topic = text[len("/essay "):].strip()
+        if not topic:
+            await send_message(chat_id, "essay tentang apa? kasih topiknya dong, contoh: /essay dampak media sosial")
+            return {"ok": True}
+        essay_messages = [
+            {"role": "system", "content": "Kamu adalah asisten penulisan esai. Tulis esai yang terstruktur dengan baik, informatif, dan engaging tentang topik yang diberikan. Gunakan bahasa Indonesia yang baik dan benar. Sertakan pendahuluan, isi dengan beberapa paragraf, dan kesimpulan."},
+            {"role": "user", "content": f"Tulis esai tentang: {topic}"}
+        ]
+        try:
+            reply = await ask_groq(essay_messages)
+        except Exception as e:
+            reply = f"aduh gagal bikin essay: {str(e)}"
+        await save_message(chat_id, "user", f"/essay {topic}")
+        await save_message(chat_id, "assistant", reply)
+        await send_message(chat_id, reply, reply_to=message_id)
+        return {"ok": True}
+
     asyncio.create_task(maybe_shift_mood(text or caption))
     full_system, mood, _ = await build_system_prompt(chat_id)
     history = await load_history(chat_id)
@@ -561,11 +718,11 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \ud83d\udd0d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \U0001f50d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \ud83d\udd0d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \U0001f50d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu \ud83d\udd0d", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu \U0001f50d", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
