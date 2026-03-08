@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 KLIPY_API_KEY = os.environ.get("KLIPY_API_KEY", "")
@@ -21,11 +21,8 @@ DAD_ID = 8284345086
 MOM_ID = 5484371031
 GROUP_ID = -1003837472701
 
-# gemini-2.0-flash for real conversations/vision
-# gemini-2.0-flash-lite for background tasks (proactive, fact extraction)
-CHAT_MODEL = "gemini-2.0-flash"
-LITE_MODEL = "gemini-2.0-flash-lite"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+TEXT_MODEL = "llama-3.3-70b-versatile"
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 MOODS = ["happy", "hyper", "chill", "tired", "mischievous", "clingy", "sassy"]
 
@@ -217,7 +214,7 @@ async def clear_history(chat_id: int):
 
 # --- Telegram helpers ---
 async def send_message(chat_id: int, text: str, reply_to: int = None):
-    payload = {"chat_id": chat_id, "text": text}
+    payload = {"chat_id": chat_id, "text": sanitize(text)}
     if reply_to:
         payload["reply_to_message_id"] = reply_to
     async with httpx.AsyncClient() as client:
@@ -235,6 +232,10 @@ async def send_chat_action(chat_id: int, action: str = "typing"):
     async with httpx.AsyncClient() as client:
         await client.post(f"{TELEGRAM_API}/sendChatAction",
             json={"chat_id": chat_id, "action": action})
+
+def sanitize(text: str) -> str:
+    """Strip surrogate characters that break UTF-8 JSON encoding."""
+    return text.encode("utf-8", errors="ignore").decode("utf-8")
 
 async def human_delay(chat_id: int):
     delay = random.uniform(3, 6)
@@ -266,79 +267,27 @@ async def get_klipy_gif(keyword: str) -> str | None:
     except Exception:
         return None
 
-# --- Gemini AI core ---
-# Converts OpenAI-style messages to Gemini format and calls the API.
-# model: CHAT_MODEL (flash) for real convos/vision, LITE_MODEL (flash-lite) for background tasks.
-async def ask_gemini(messages: list, model: str = CHAT_MODEL) -> str:
-    url = GEMINI_URL.format(model=model)
+# --- Groq AI (text only) ---
+async def ask_groq(messages: list) -> str:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={"model": TEXT_MODEL, "messages": messages, "max_tokens": 1024}
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
-    # Build Gemini contents from messages list
-    # system message -> systemInstruction, rest -> contents
-    system_text = None
-    contents = []
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-        if role == "system":
-            if isinstance(content, str):
-                system_text = content
-            continue
-        gemini_role = "user" if role == "user" else "model"
-        if isinstance(content, str):
-            contents.append({"role": gemini_role, "parts": [{"text": content}]})
-        elif isinstance(content, list):
-            # vision: list of parts (image_url + text)
-            parts = []
-            for part in content:
-                if part.get("type") == "text":
-                    parts.append({"text": part["text"]})
-                elif part.get("type") == "image_url":
-                    url_val = part["image_url"]["url"]
-                    if url_val.startswith("data:"):
-                        # base64 inline image
-                        header, b64data = url_val.split(",", 1)
-                        mime = header.split(":")[1].split(";")[0]
-                        parts.append({"inline_data": {"mime_type": mime, "data": b64data}})
-                    else:
-                        parts.append({"text": f"[image: {url_val}]"})
-            contents.append({"role": gemini_role, "parts": parts})
-
-    payload = {
-        "contents": contents,
-        "generationConfig": {"maxOutputTokens": 1024}
-    }
-    if system_text:
-        payload["systemInstruction"] = {"parts": [{"text": system_text}]}
-
-    max_retries = 4
-    backoff = 5
-    last_error = None
-    async with httpx.AsyncClient(timeout=40) as client:
-        for attempt in range(max_retries):
-            try:
-                resp = await client.post(
-                    url,
-                    params={"key": GEMINI_API_KEY},
-                    json=payload
-                )
-                if resp.status_code == 429:
-                    wait = backoff * (2 ** attempt) + random.uniform(0, 2)
-                    print(f"[ask_gemini] 429 on {model}, waiting {wait:.1f}s (attempt {attempt+1}/{max_retries})")
-                    await asyncio.sleep(wait)
-                    last_error = f"429 Too Many Requests"
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait = backoff * (2 ** attempt) + random.uniform(0, 2)
-                    print(f"[ask_gemini] 429 on {model}, waiting {wait:.1f}s (attempt {attempt+1}/{max_retries})")
-                    await asyncio.sleep(wait)
-                    last_error = str(e)
-                    continue
-                raise
-    raise Exception(f"[ask_gemini] failed after {max_retries} retries on {model}: {last_error}")
+# --- Groq AI (vision) ---
+async def ask_groq_vision(messages: list) -> str:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={"model": VISION_MODEL, "messages": messages, "max_tokens": 1024}
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
 # --- Download photo as base64 ---
 async def get_photo_base64(file_id: str) -> str | None:
@@ -353,7 +302,7 @@ async def get_photo_base64(file_id: str) -> str | None:
     except Exception:
         return None
 
-# --- Fact extraction (uses LITE_MODEL) ---
+# --- Fact extraction ---
 async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
     extraction_prompt = [
         {
@@ -369,7 +318,7 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
         {"role": "user", "content": f"User berkata: {user_text}\nBot menjawab: {assistant_reply}"}
     ]
     try:
-        result = await ask_gemini(extraction_prompt, model=LITE_MODEL)
+        result = await ask_groq(extraction_prompt)
         if "TIDAK ADA" in result:
             return
         lines = [l.strip() for l in result.splitlines() if l.strip().startswith("FAKTA:")]
@@ -377,8 +326,8 @@ async def extract_facts(chat_id: int, user_text: str, assistant_reply: str):
             fact = line.replace("FAKTA:", "").strip()
             if fact:
                 await save_memory(chat_id, fact)
-    except Exception as e:
-        print(f"[extract_facts] error: {e}")
+    except Exception:
+        pass
 
 # --- Web search (DuckDuckGo) ---
 async def web_search(query: str) -> str:
@@ -464,7 +413,7 @@ async def proactive_mom():
     await send_proactive_message(MOM_ID, "mama")
     return {"ok": True}
 
-# --- Proactive message builder (uses LITE_MODEL) ---
+# --- Proactive message builder ---
 async def send_proactive_message(chat_id: int, target_name: str):
     hour = datetime.utcnow().hour + 7
     if hour >= 24:
@@ -511,8 +460,7 @@ async def send_proactive_message(chat_id: int, target_name: str):
     ]
 
     try:
-        # Use LITE_MODEL for proactive messages
-        message = await ask_gemini(proactive_prompt, model=LITE_MODEL)
+        message = await ask_groq(proactive_prompt)
 
         if random.random() < 0.35 and KLIPY_API_KEY:
             gif_url = await get_klipy_gif(MOOD_GIF_KEYWORDS.get(mood, "anime cute"))
@@ -544,7 +492,7 @@ async def webhook(request: Request):
     await human_delay(chat_id)
 
     if text == "/start":
-        await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2026, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
+        await send_message(chat_id, "haii haii, aku Cumi Cumi! ya, namanya emang artinya cumi-cumi. papa Dew sama mama Jen yang buat aku tanggal 7 Maret 2025, dan aku udah jadi that girl sejak itu. tanya apa aja boleh~")
         return {"ok": True}
     if text == "/clear":
         await clear_history(chat_id)
@@ -589,8 +537,7 @@ async def webhook(request: Request):
                 ]}
             ]
             try:
-                # Use CHAT_MODEL (flash) for vision
-                reply = await ask_gemini(vision_messages, model=CHAT_MODEL)
+                reply = await ask_groq_vision(vision_messages)
             except Exception as e:
                 reply = f"aduh gagal baca fotonya: {str(e)}"
         else:
@@ -618,11 +565,11 @@ async def webhook(request: Request):
     context = ""
     if needs_search:
         if user_id == DAD_ID:
-            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu \ud83d\udd0d", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar ya pa! lagi nyariin dulu", "bentar pa, adek googling dulu~", "oke pa, tunggu sebentar ya!"])
         elif user_id == MOM_ID:
-            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu \ud83d\udd0d", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
+            wait_msg = random.choice(["sebentar ya ma! lagi nyariin dulu", "bentar ma, adek googling dulu~", "oke ma, tunggu ya!"])
         else:
-            wait_msg = random.choice(["sebentar! lagi nyariin dulu \ud83d\udd0d", "bentar, googling dulu~", "tunggu sebentar ya!"])
+            wait_msg = random.choice(["sebentar! lagi nyariin dulu", "bentar, googling dulu~", "tunggu sebentar ya!"])
         await send_message(chat_id, wait_msg)
         asyncio.create_task(send_chat_action(chat_id, "typing"))
         search_result = await web_search(text)
@@ -633,8 +580,7 @@ async def webhook(request: Request):
     messages.append({"role": "user", "content": labeled + context})
 
     try:
-        # Use CHAT_MODEL (flash) for real conversations
-        reply = await ask_gemini(messages, model=CHAT_MODEL)
+        reply = await ask_groq(messages)
     except Exception as e:
         reply = f"something broke lol: {str(e)}"
 
